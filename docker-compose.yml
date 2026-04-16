@@ -1,0 +1,129 @@
+name: agentic
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/web-prod.dockerfile
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PYTHON_API_URL: http://python-api:8001
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
+    ports:
+      - "3000:3000"
+    depends_on:
+      python-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/agent').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  python-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      TEMPORAL_AUTO_START_DEV_SERVER: "0"
+      TEMPORAL_ADDRESS: "temporal:7233"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
+    ports:
+      - "8001:8001"
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - python_api_data:/app/python_api/data
+      - python_uploads:/app/uploads_python
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health').read()
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentic
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U postgres -d agentic
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  temporal:
+    image: temporalio/auto-setup:${TEMPORAL_VERSION:-1.29.2}
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    ports:
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - temporal operator namespace list >/dev/null 2>&1 || exit 1
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:${TEMPORAL_UI_VERSION:-2.43.3}
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8080:8080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  python_api_data:
+  python_uploads:

@@ -1,0 +1,17 @@
+.git
+.next
+.venv
+node_modules
+coverage
+dist
+dev.log
+dev.err.log
+python-api.log
+python-api.err.log
+uploads_python
+python_api/data
+.env
+.env.local
+*.pyc
+__pycache__/
+tsconfig.tsbuildinfo

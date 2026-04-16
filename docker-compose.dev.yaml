@@ -1,0 +1,91 @@
+name: agentic-dev
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/web-dev.dockerfile
+    working_dir: /app
+    command: npm run dev -- --hostname 0.0.0.0
+    env_file:
+      - .env
+    environment:
+      NEXT_TELEMETRY_DISABLED: "1"
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      PYTHON_API_URL: http://python-api:8001
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - web_node_modules:/app/node_modules
+      - web_next:/app/.next
+    depends_on:
+      python-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/agent').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  python-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    working_dir: /app
+    command: python -m uvicorn python_api.main:app --host 0.0.0.0 --port 8001
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      TEMPORAL_AUTO_START_DEV_SERVER: "1"
+      TEMPORAL_ADDRESS: "127.0.0.1:7233"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
+    ports:
+      - "8001:8001"
+    volumes:
+      - .:/app
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health').read()
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    profiles:
+      - db
+    environment:
+      POSTGRES_DB: agentic
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U postgres -d agentic
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  web_node_modules:
+  web_next:
+  postgres_data:

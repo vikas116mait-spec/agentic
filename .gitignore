@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+coverage
+uploads
+uploads_python
+.env
+.env.local
+.venv
+__pycache__/
+*.pyc
+python_api/data/state.json
+python_api/data/temporal/
+python_api/data/temporal-dev.db*
+*.log
+prisma/dev.db

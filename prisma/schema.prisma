@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DatasetValidationStatus {
+  PENDING
+  VALID
+  INVALID
+}
+
+enum FineTuneJobStatus {
+  validating_files
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+  paused
+  unknown
+}
+
+model User {
+  id             String          @id @default(cuid())
+  email          String          @unique
+  name           String?
+  passwordHash   String
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  datasets       Dataset[]
+  fineTuneJobs   FineTuneJob[]
+  playgroundRuns PlaygroundRun[]
+}
+
+model Dataset {
+  id                    String                  @id @default(cuid())
+  userId                String
+  name                  String
+  originalFilename      String
+  storagePath           String
+  fileSizeBytes         Int
+  recordCount           Int                     @default(0)
+  validationStatus      DatasetValidationStatus @default(PENDING)
+  validationSummaryJson Json
+  openaiFileId          String?
+  uploadedToOpenAIAt    DateTime?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fineTuneJobs          FineTuneJob[]
+
+  @@index([userId, createdAt])
+}
+
+model FineTuneJob {
+  id                  String            @id @default(cuid())
+  userId              String
+  datasetId           String
+  openaiJobId         String            @unique
+  baseModel           String
+  methodType          String
+  status              FineTuneJobStatus @default(queued)
+  fineTunedModel      String?
+  trainedTokens       Int?
+  estimatedFinishAt   DateTime?
+  resultFilesJson     Json?
+  hyperparametersJson Json?
+  lastSyncedAt        DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  finishedAt          DateTime?
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dataset             Dataset           @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  events              JobEvent[]
+  playgroundRuns      PlaygroundRun[]
+
+  @@index([userId, createdAt])
+  @@index([datasetId])
+}
+
+model JobEvent {
+  id            String      @id @default(cuid())
+  fineTuneJobId String
+  level         String
+  message       String
+  eventType     String?
+  createdAt     DateTime
+  fineTuneJob   FineTuneJob @relation(fields: [fineTuneJobId], references: [id], onDelete: Cascade)
+
+  @@index([fineTuneJobId, createdAt])
+}
+
+model PlaygroundRun {
+  id             String       @id @default(cuid())
+  userId         String
+  fineTuneJobId  String?
+  baseModel      String
+  fineTunedModel String?
+  prompt         String
+  baseOutput     String?
+  tunedOutput    String?
+  createdAt      DateTime     @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fineTuneJob    FineTuneJob? @relation(fields: [fineTuneJobId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
