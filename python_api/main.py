@@ -8,21 +8,26 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from python_api.env import ensure_env_loaded
 from python_api.errors import ApiError
 from python_api.agentic_workflow import AgentRunWorkflow
 from python_api.services import (
     DEFAULT_AGENT_MODEL,
     DEFAULT_BASE_MODEL,
     cancel_job_record,
+    build_job_download_package,
+    create_model_profile,
     create_agent_run_record,
     create_dataset_record,
     create_job_record,
     dashboard_summary,
+    delete_model_profile,
     get_provider_display_name,
     get_agent_run_detail,
+    list_model_profiles,
     list_agent_runs,
     list_datasets,
     list_job_events,
@@ -35,9 +40,13 @@ from python_api.services import (
     run_playground_prompt,
     save_agent_run_snapshot,
     sync_job_record,
+    update_model_profile,
+    update_model_profile_defaults,
     upload_dataset_record_to_openai,
 )
 from python_api.temporal_runtime import temporal_runtime
+
+ensure_env_loaded()
 
 
 def error_response(code: str, message: str, status: int = 400, details: list[Any] | None = None) -> JSONResponse:
@@ -62,12 +71,15 @@ def handle_api_error(error: Exception) -> JSONResponse:
 class CreateJobRequest(BaseModel):
     datasetId: str
     baseModel: str = DEFAULT_BASE_MODEL
+    modelProvider: str | None = None
     hyperparameters: dict[str, Any] | None = None
 
 
 class PlaygroundRunRequest(BaseModel):
     baseModel: str = DEFAULT_BASE_MODEL
+    baseModelProvider: str | None = None
     fineTunedModel: str | None = None
+    fineTunedModelProvider: str | None = None
     prompt: str
 
 
@@ -75,8 +87,26 @@ class CreateAgentRunRequest(BaseModel):
     goal: str
     datasetId: str | None = None
     baseModel: str = DEFAULT_BASE_MODEL
+    baseModelProvider: str | None = None
     evaluationPrompt: str | None = None
     agentModel: str | None = DEFAULT_AGENT_MODEL
+    agentModelProvider: str | None = None
+
+
+class ModelProfileRequest(BaseModel):
+    name: str
+    provider: str
+    model: str
+    category: str = "custom"
+    description: str | None = None
+
+
+class ModelProfileDefaultsRequest(BaseModel):
+    playgroundBaseProfileId: str | None = None
+    playgroundCompareProfileId: str | None = None
+    agentBaseProfileId: str | None = None
+    agentModelProfileId: str | None = None
+    jobBaseProfileId: str | None = None
 
 
 @asynccontextmanager
@@ -110,6 +140,59 @@ def get_dashboard_summary():
     try:
         return dashboard_summary()
     except Exception as error:  # pragma: no cover
+        return handle_api_error(error)
+
+
+@app.get("/settings/model-profiles")
+def get_model_profiles():
+    try:
+        return list_model_profiles()
+    except Exception as error:
+        return handle_api_error(error)
+
+
+@app.post("/settings/model-profiles")
+def post_model_profile(request: ModelProfileRequest):
+    try:
+        return create_model_profile(
+            request.name,
+            request.provider,
+            request.model,
+            request.category,
+            request.description,
+        )
+    except Exception as error:
+        return handle_api_error(error)
+
+
+@app.patch("/settings/model-profiles/defaults")
+def patch_model_profile_defaults(request: ModelProfileDefaultsRequest):
+    try:
+        return update_model_profile_defaults(request.model_dump())
+    except Exception as error:
+        return handle_api_error(error)
+
+
+@app.patch("/settings/model-profiles/{profile_id}")
+def patch_model_profile(profile_id: str, request: ModelProfileRequest):
+    try:
+        return update_model_profile(
+            profile_id,
+            request.name,
+            request.provider,
+            request.model,
+            request.category,
+            request.description,
+        )
+    except Exception as error:
+        return handle_api_error(error)
+
+
+@app.delete("/settings/model-profiles/{profile_id}")
+def remove_model_profile(profile_id: str):
+    try:
+        return delete_model_profile(profile_id)
+    except Exception as error:
         return handle_api_error(error)
 
 
@@ -158,7 +241,7 @@ def get_jobs():
 @app.post("/jobs")
 def create_job(request: CreateJobRequest):
     try:
-        return create_job_record(request.datasetId, request.baseModel, request.hyperparameters)
+        return create_job_record(request.datasetId, request.baseModel, request.hyperparameters, request.modelProvider)
     except Exception as error:
         return handle_api_error(error)
 
@@ -195,10 +278,25 @@ def cancel_job(job_id: str):
         return handle_api_error(error)
 
 
+@app.get("/jobs/{job_id}/download")
+def download_job(job_id: str):
+    try:
+        package = build_job_download_package(job_id)
+        return FileResponse(package["path"], media_type=package["mediaType"], filename=package["filename"])
+    except Exception as error:
+        return handle_api_error(error)
+
+
 @app.post("/playground/run")
 def run_playground(request: PlaygroundRunRequest):
     try:
-        return run_playground_prompt(request.prompt, request.baseModel, request.fineTunedModel)
+        return run_playground_prompt(
+            request.prompt,
+            request.baseModel,
+            request.fineTunedModel,
+            request.baseModelProvider,
+            request.fineTunedModelProvider,
+        )
     except Exception as error:
         return handle_api_error(error)
 
@@ -221,10 +319,19 @@ async def create_agent_run(request: CreateAgentRunRequest):
     if not request.goal.strip():
         return error_response("AGENT_GOAL_REQUIRED", "A goal is required to start an agent run.", 400)
 
-    if not provider_is_configured():
+    required_providers = {
+        request.baseModelProvider or None,
+        request.agentModelProvider or request.baseModelProvider or None,
+    }
+    unresolved = [provider for provider in required_providers if provider and not provider_is_configured(provider)]
+    if unresolved:
         return error_response(
             "MODEL_PROVIDER_NOT_CONFIGURED",
-            f"Set the required credentials for {get_provider_display_name()} before starting an agent run.",
+            (
+                "Set the required credentials for "
+                f"{', '.join(get_provider_display_name(provider) for provider in sorted(unresolved))} "
+                "before starting an agent run."
+            ),
             503,
             [provider_status_payload()],
         )
@@ -248,11 +355,14 @@ async def create_agent_run(request: CreateAgentRunRequest):
         "goal": request.goal.strip(),
         "datasetId": request.datasetId,
         "baseModel": request.baseModel or DEFAULT_BASE_MODEL,
+        "baseModelProvider": request.baseModelProvider,
         "evaluationPrompt": request.evaluationPrompt,
         "agentModel": request.agentModel or DEFAULT_AGENT_MODEL,
+        "agentModelProvider": request.agentModelProvider,
         "summary": None,
         "latestJobId": None,
         "fineTunedModel": None,
+        "fineTunedModelProvider": None,
         "lastError": None,
         "latestResponseId": None,
         "sleepSeconds": None,
@@ -272,8 +382,10 @@ async def create_agent_run(request: CreateAgentRunRequest):
             goal=request.goal.strip(),
             dataset_id=request.datasetId,
             base_model=request.baseModel or DEFAULT_BASE_MODEL,
+            base_model_provider=request.baseModelProvider,
             evaluation_prompt=request.evaluationPrompt,
             agent_model=request.agentModel or DEFAULT_AGENT_MODEL,
+            agent_model_provider=request.agentModelProvider,
         )
     except Exception as error:  # pragma: no cover
         return handle_api_error(ApiError("AGENT_RUN_FAILED", str(error), 500))

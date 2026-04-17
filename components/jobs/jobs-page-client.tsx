@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
@@ -16,6 +17,7 @@ type JobListItem = {
   status: string;
   baseModel: string;
   fineTunedModel: string | null;
+  modelProviderLabel: string;
   datasetName: string;
   createdAt: string;
 };
@@ -30,72 +32,56 @@ export function JobsPageClient() {
       .catch((requestError: Error) => setError(requestError.message));
   }, []);
 
-  if (error) {
-    return <ErrorAlert title="Could not load jobs" description={error} />;
-  }
-
-  if (!jobs) {
-    return <LoadingState label="Loading jobs..." />;
-  }
+  if (error) return <ErrorAlert title="Could not load jobs" description={error} />;
+  if (!jobs) return <LoadingState label="Loading jobs..." />;
 
   if (jobs.length === 0) {
     return (
       <EmptyState
         title="No jobs yet"
-        description="Once a validated dataset is ready and OpenAI mode is enabled, you can create a fine-tuning job here."
+        description="Upload one dataset, then start a fine-tuning run. OpenAI, Hugging Face Jobs, and Local GPU QLoRA training profiles all show up here."
         action={
-          <Link href="/jobs/new">
-            <Button>Create job</Button>
-          </Link>
+          <div className="flex gap-3">
+            <Link href="/datasets/new">
+              <Button>Upload dataset</Button>
+            </Link>
+            <Link href="/jobs/new">
+              <Button variant="ghost">Create job</Button>
+            </Link>
+          </div>
         }
       />
     );
   }
 
   return (
-    <Card>
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <p className="font-display text-3xl">Fine-tuning jobs</p>
-          <p className="mt-2 text-sm text-black/60">Track status, inspect events, and jump into testing when the model is ready.</p>
-        </div>
+        <p className="font-display text-2xl">Training runs</p>
         <Link href="/jobs/new">
-          <Button>New job</Button>
+          <Button size="sm">Start run</Button>
         </Link>
       </div>
 
-      <div className="mt-6 overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="text-black/45">
-            <tr>
-              <th className="pb-3">Dataset</th>
-              <th className="pb-3">Status</th>
-              <th className="pb-3">Base model</th>
-              <th className="pb-3">Fine-tuned model</th>
-              <th className="pb-3">Created</th>
-              <th className="pb-3">Action</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-black/5">
-            {jobs.map((job) => (
-              <tr key={job.id}>
-                <td className="py-4 font-semibold">{job.datasetName}</td>
-                <td className="py-4">
-                  <StatusBadge value={job.status} />
-                </td>
-                <td className="py-4">{job.baseModel}</td>
-                <td className="py-4">{job.fineTunedModel ?? "--"}</td>
-                <td className="py-4">{formatDate(job.createdAt)}</td>
-                <td className="py-4">
-                  <Link href={`/jobs/${job.id}`} className="font-semibold text-brand">
-                    View
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
+      {jobs.map((job) => (
+        <Link key={job.id} href={`/jobs/${job.id}`} className="block">
+          <div className="flex items-center justify-between rounded-[1.5rem] border border-black/8 bg-white/80 p-5 shadow-sm transition hover:shadow-md">
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{job.datasetName}</p>
+              <p className="mt-1 truncate text-sm text-black/50">
+                {job.modelProviderLabel} · {job.baseModel} · {formatDate(job.createdAt)}
+              </p>
+              {job.fineTunedModel && (
+                <p className="mt-1 truncate text-xs text-brand">{job.fineTunedModel}</p>
+              )}
+            </div>
+            <div className="ml-4 flex shrink-0 items-center gap-3">
+              <StatusBadge value={job.status} />
+              <ArrowRight className="h-4 w-4 text-black/30" />
+            </div>
+          </div>
+        </Link>
+      ))}
+    </div>
   );
 }

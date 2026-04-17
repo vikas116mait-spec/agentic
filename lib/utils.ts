@@ -41,6 +41,25 @@ export function formatBytes(bytes: number | null | undefined) {
   return `${current.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
+export function formatDuration(seconds: number | null | undefined) {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
+    return "--";
+  }
+
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+  return `${remainingSeconds}s`;
+}
+
 export function slugifyFileName(value: string) {
   return value.replace(/[^a-zA-Z0-9.\-_]/g, "-").toLowerCase();
 }

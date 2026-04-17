@@ -13,6 +13,48 @@ export type DatasetValidationExample = {
   preview: unknown;
 };
 
+export type ModelProvider = "ollama" | "openai" | "huggingface" | "local";
+
+export type ModelProfileCategory = "small" | "medium" | "large" | "thinking" | "custom";
+
+export type ProviderStatus = {
+  provider: ModelProvider;
+  label: string;
+  baseUrl: string | null;
+  configured: boolean;
+  supportsInference: boolean;
+  supportsFineTuning: boolean;
+};
+
+export type ModelProfile = {
+  id: string;
+  name: string;
+  provider: ModelProvider;
+  providerLabel: string;
+  providerConfigured: boolean;
+  supportsInference: boolean;
+  supportsFineTuning: boolean;
+  model: string;
+  category: ModelProfileCategory;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ModelProfileDefaults = {
+  playgroundBaseProfileId: string | null;
+  playgroundCompareProfileId: string | null;
+  agentBaseProfileId: string | null;
+  agentModelProfileId: string | null;
+  jobBaseProfileId: string | null;
+};
+
+export type ModelProfilesResponse = {
+  profiles: ModelProfile[];
+  defaults: ModelProfileDefaults;
+  providers: ProviderStatus[];
+};
+
 export type DatasetValidationSummary = {
   totalRecords: number;
   validRecords: number;

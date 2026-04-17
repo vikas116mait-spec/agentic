@@ -1,15 +1,15 @@
 import fs from "node:fs";
 import OpenAI from "openai";
 
-type ModelProvider = "ollama" | "openai";
+type ModelProvider = "ollama" | "openai" | "huggingface" | "local";
 
 function getModelProvider(): ModelProvider {
   const configured = process.env.LLM_PROVIDER?.trim().toLowerCase();
-  if (configured && configured !== "ollama" && configured !== "openai") {
-    throw new Error(`Unsupported LLM_PROVIDER \`${configured}\`. Use \`ollama\` or \`openai\`.`);
+  if (configured && configured !== "ollama" && configured !== "openai" && configured !== "huggingface" && configured !== "local") {
+    throw new Error(`Unsupported LLM_PROVIDER \`${configured}\`. Use \`ollama\`, \`openai\`, \`huggingface\`, or \`local\`.`);
   }
 
-  if (configured === "ollama" || configured === "openai") {
+  if (configured === "ollama" || configured === "openai" || configured === "huggingface" || configured === "local") {
     return configured;
   }
 
@@ -27,11 +27,15 @@ function ensureFineTuningAvailable() {
   }
 
   throw new Error(
-    "Managed fine-tuning is unavailable in local Ollama mode. Switch to `LLM_PROVIDER=openai` and set `OPENAI_API_KEY` when you want remote training jobs."
+    "This legacy Next.js fine-tuning path is OpenAI-only. Use the Python API jobs flow for Hugging Face Jobs or Local GPU QLoRA training."
   );
 }
 
 function getClient() {
+  if (getModelProvider() === "huggingface" || getModelProvider() === "local") {
+    throw new Error("This provider is a training backend in this app, not a direct inference client.");
+  }
+
   if (getModelProvider() === "openai") {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("OPENAI_API_KEY is not configured.");

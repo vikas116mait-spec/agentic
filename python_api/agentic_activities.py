@@ -186,13 +186,15 @@ def _build_run_context(snapshot: dict[str, Any], *, continuing: bool) -> str:
     step_lines = [f"- {step['title']}: {step['detail']}" for step in recent_steps] or ["- No steps recorded yet."]
 
     header = "Continue the active run." if continuing else "Start a new agentic fine-tuning run."
-    provider = get_model_provider()
+    base_provider = snapshot.get("baseModelProvider") or get_model_provider()
+    agent_provider = snapshot.get("agentModelProvider") or base_provider
     provider_lines = [
-        f"Model provider: {get_provider_display_name(provider)} ({provider})",
+        f"Base model provider: {get_provider_display_name(base_provider)} ({base_provider})",
+        f"Agent model provider: {get_provider_display_name(agent_provider)} ({agent_provider})",
         (
-            "Managed fine-tuning support: available."
-            if provider_supports_fine_tuning(provider)
-            else "Managed fine-tuning support: unavailable in local mode. Focus on dataset review and playground runs."
+            "Managed fine-tuning support: available for the selected base provider."
+            if provider_supports_fine_tuning(base_provider)
+            else "Managed fine-tuning support: unavailable for the selected base provider. Focus on dataset review and playground runs."
         ),
     ]
 
@@ -203,9 +205,13 @@ def _build_run_context(snapshot: dict[str, Any], *, continuing: bool) -> str:
             f"Goal: {snapshot['goal']}",
             f"Pinned dataset id: {snapshot.get('datasetId') or 'none'}",
             f"Preferred base model: {snapshot.get('baseModel') or 'none'}",
+            f"Preferred base model provider: {snapshot.get('baseModelProvider') or 'none'}",
             f"Evaluation prompt: {snapshot.get('evaluationPrompt') or 'none'}",
+            f"Agent model: {snapshot.get('agentModel') or 'none'}",
+            f"Agent model provider: {snapshot.get('agentModelProvider') or 'none'}",
             f"Latest known job id: {snapshot.get('latestJobId') or 'none'}",
             f"Latest known fine-tuned model: {snapshot.get('fineTunedModel') or 'none'}",
+            f"Latest known fine-tuned model provider: {snapshot.get('fineTunedModelProvider') or 'none'}",
             "Recent run history:",
             *step_lines,
         ]
@@ -214,6 +220,10 @@ def _build_run_context(snapshot: dict[str, Any], *, continuing: bool) -> str:
 
 def _model_name(snapshot: dict[str, Any]) -> str:
     return snapshot.get("agentModel") or DEFAULT_AGENT_MODEL
+
+
+def _agent_provider(snapshot: dict[str, Any]) -> str:
+    return snapshot.get("agentModelProvider") or get_model_provider()
 
 
 def _response_tool_definitions() -> list[dict[str, Any]]:
@@ -238,7 +248,7 @@ def _chat_tool_definitions() -> list[dict[str, Any]]:
 
 
 def _call_agent_model(snapshot: dict[str, Any], input_items: list[dict[str, Any]], previous_response_id: str | None):
-    client = get_model_client()
+    client = get_model_client(_agent_provider(snapshot))
     request: dict[str, Any] = {
         "model": _model_name(snapshot),
         "instructions": AGENT_INSTRUCTIONS,
@@ -345,7 +355,8 @@ def _execute_tool(name: str, args: dict[str, Any], snapshot: dict[str, Any]) -> 
     if name == "create_job":
         dataset_id = args["dataset_id"]
         base_model = args.get("base_model") or snapshot.get("baseModel")
-        job = create_job_record(dataset_id, base_model)
+        base_provider = snapshot.get("baseModelProvider")
+        job = create_job_record(dataset_id, base_model, provider=base_provider)
         return (
             {
                 "output": job,
@@ -357,8 +368,10 @@ def _execute_tool(name: str, args: dict[str, Any], snapshot: dict[str, Any]) -> 
             {
                 "datasetId": dataset_id,
                 "baseModel": job["baseModel"],
+                "baseModelProvider": job.get("modelProvider") or base_provider,
                 "latestJobId": job["id"],
                 "fineTunedModel": job.get("fineTunedModel"),
+                "fineTunedModelProvider": job.get("modelProvider"),
             },
         )
 
@@ -375,6 +388,7 @@ def _execute_tool(name: str, args: dict[str, Any], snapshot: dict[str, Any]) -> 
             {
                 "latestJobId": job["id"],
                 "fineTunedModel": job.get("fineTunedModel"),
+                "fineTunedModelProvider": job.get("modelProvider"),
             },
         )
 
@@ -382,7 +396,13 @@ def _execute_tool(name: str, args: dict[str, Any], snapshot: dict[str, Any]) -> 
         prompt = args["prompt"]
         base_model = args.get("base_model") or snapshot.get("baseModel")
         fine_tuned_model = args.get("fine_tuned_model") or snapshot.get("fineTunedModel")
-        result = run_playground_prompt(prompt, base_model, fine_tuned_model)
+        result = run_playground_prompt(
+            prompt,
+            base_model,
+            fine_tuned_model,
+            snapshot.get("baseModelProvider"),
+            snapshot.get("fineTunedModelProvider"),
+        )
         return (
             {
                 "output": result,
@@ -510,7 +530,7 @@ def _run_local_agent_turn(snapshot: dict[str, Any]) -> dict[str, Any]:
         {"role": "user", "content": _build_run_context(working_snapshot, continuing=False)},
     ]
 
-    client = get_model_client()
+    client = get_model_client(_agent_provider(working_snapshot))
     tools = _chat_tool_definitions()
 
     for _ in range(MAX_TOOL_LOOPS):
@@ -578,7 +598,7 @@ def _run_local_agent_turn(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_agent_turn(snapshot: dict[str, Any]) -> dict[str, Any]:
-    if get_model_provider() == "openai":
+    if _agent_provider(snapshot) == "openai":
         return _run_openai_agent_turn(snapshot)
     return _run_local_agent_turn(snapshot)
 

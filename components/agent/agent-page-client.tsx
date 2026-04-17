@@ -7,7 +7,9 @@ import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { LoadingState } from "@/components/ui/loading-state";
 import { Textarea } from "@/components/ui/textarea";
+import { findModelProfile, isRunnableProfile, modelProfileLabel } from "@/lib/model-profiles";
 import { pythonApiFetch } from "@/lib/python-api";
+import type { ModelProfilesResponse } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 
 type RuntimeStatus = {
@@ -23,6 +25,7 @@ type RuntimeStatus = {
   providerBaseUrl: string | null;
   providerConfigured: boolean;
   supportsFineTuning: boolean;
+  managedFineTuningAvailable: boolean;
   defaultBaseModel: string;
   defaultAgentModel: string;
 };
@@ -50,12 +53,15 @@ type AgentRun = {
   status: string;
   goal: string;
   baseModel: string;
+  baseModelProvider: string | null;
   datasetId: string | null;
   evaluationPrompt: string | null;
   agentModel: string | null;
+  agentModelProvider: string | null;
   summary: string | null;
   latestJobId: string | null;
   fineTunedModel: string | null;
+  fineTunedModelProvider: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -68,6 +74,7 @@ const OPENAI_RUN_GOAL =
   "Take my latest valid dataset, upload it to OpenAI, create a supervised fine-tune, keep monitoring the job until it finishes, and run the evaluation prompt once the model is ready.";
 const LOCAL_RUN_GOAL =
   "Review my latest valid dataset, tell me whether it looks ready for fine-tuning later, and run the evaluation prompt against my local model so I can iterate cheaply for now.";
+const selectClassName = "w-full rounded-2xl border border-black/10 bg-white px-4 py-3";
 
 function mergeRun(runs: AgentRun[], updatedRun: AgentRun) {
   const withoutUpdated = runs.filter((run) => run.id !== updatedRun.id);
@@ -76,15 +83,16 @@ function mergeRun(runs: AgentRun[], updatedRun: AgentRun) {
 
 export function AgentPageClient() {
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [profilesData, setProfilesData] = useState<ModelProfilesResponse | null>(null);
   const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<AgentRun | null>(null);
   const [goal, setGoal] = useState("");
   const [datasetId, setDatasetId] = useState("");
-  const [baseModel, setBaseModel] = useState("");
+  const [baseProfileId, setBaseProfileId] = useState("");
+  const [agentProfileId, setAgentProfileId] = useState("");
   const [evaluationPrompt, setEvaluationPrompt] = useState("Summarize the user request in one sentence.");
-  const [agentModel, setAgentModel] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -95,22 +103,41 @@ export function AgentPageClient() {
     () => datasets.find((dataset) => dataset.id === datasetId) ?? null,
     [datasetId, datasets]
   );
+  const runnableProfiles = useMemo(
+    () => (profilesData?.profiles ?? []).filter(isRunnableProfile),
+    [profilesData?.profiles]
+  );
+  const selectedBaseProfile = useMemo(
+    () => findModelProfile(profilesData?.profiles ?? [], baseProfileId),
+    [baseProfileId, profilesData?.profiles]
+  );
+  const selectedAgentProfile = useMemo(
+    () => findModelProfile(profilesData?.profiles ?? [], agentProfileId),
+    [agentProfileId, profilesData?.profiles]
+  );
 
   useEffect(() => {
     async function loadInitialState() {
       try {
-        const [runtimePayload, datasetPayload, runPayload] = await Promise.all([
+        const [runtimePayload, profilesPayload, datasetPayload, runPayload] = await Promise.all([
           pythonApiFetch<RuntimeStatus>("/agent/runtime"),
+          pythonApiFetch<ModelProfilesResponse>("/settings/model-profiles"),
           pythonApiFetch<DatasetOption[]>("/datasets"),
           pythonApiFetch<AgentRun[]>("/agent/runs")
         ]);
         setRuntime(runtimePayload);
+        setProfilesData(profilesPayload);
         setDatasets(datasetPayload);
         setRuns(runPayload);
         setSelectedRunId((current) => current ?? runPayload[0]?.id ?? null);
-        setGoal((current) => current || (runtimePayload.supportsFineTuning ? OPENAI_RUN_GOAL : LOCAL_RUN_GOAL));
-        setBaseModel((current) => current || runtimePayload.defaultBaseModel);
-        setAgentModel((current) => current || runtimePayload.defaultAgentModel);
+        setGoal((current) => current || (runtimePayload.managedFineTuningAvailable ? OPENAI_RUN_GOAL : LOCAL_RUN_GOAL));
+
+        const runnableProfilesFromPayload = profilesPayload.profiles.filter(isRunnableProfile);
+        const firstRunnableId = runnableProfilesFromPayload[0]?.id ?? "";
+        const preferredBaseProfile = findModelProfile(runnableProfilesFromPayload, profilesPayload.defaults.agentBaseProfileId);
+        const preferredAgentProfile = findModelProfile(runnableProfilesFromPayload, profilesPayload.defaults.agentModelProfileId);
+        setBaseProfileId((current) => current || preferredBaseProfile?.id || firstRunnableId);
+        setAgentProfileId((current) => current || preferredAgentProfile?.id || preferredBaseProfile?.id || firstRunnableId);
       } catch (requestError) {
         setError(requestError instanceof Error ? requestError.message : "Could not load the agent workspace.");
       } finally {
@@ -167,6 +194,11 @@ export function AgentPageClient() {
   }
 
   async function handleCreateRun() {
+    if (!selectedBaseProfile || !selectedAgentProfile) {
+      setActionMessage("Choose both a base profile and an agent profile before starting the run.");
+      return;
+    }
+
     setSubmitting(true);
     setActionMessage(null);
 
@@ -179,9 +211,11 @@ export function AgentPageClient() {
         body: JSON.stringify({
           goal,
           datasetId: datasetId || undefined,
-          baseModel,
+          baseModel: selectedBaseProfile.model,
+          baseModelProvider: selectedBaseProfile.provider,
           evaluationPrompt: evaluationPrompt || undefined,
-          agentModel: agentModel || undefined
+          agentModel: selectedAgentProfile.model,
+          agentModelProvider: selectedAgentProfile.provider
         })
       });
       setRuns((current) => mergeRun(current, createdRun));
@@ -223,7 +257,7 @@ export function AgentPageClient() {
     return <ErrorAlert title="Could not load agent workspace" description={error} />;
   }
 
-  if (loading || !runtime) {
+  if (loading || !runtime || !profilesData) {
     return <LoadingState label="Loading agent workspace..." />;
   }
 
@@ -232,7 +266,7 @@ export function AgentPageClient() {
       <Card className="space-y-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-black/45">Temporal + {runtime.modelProviderLabel}</p>
+            <p className="text-xs uppercase tracking-[0.25em] text-black/45">Temporal + saved model profiles</p>
             <h1 className="mt-2 font-display text-4xl">Agentic control room</h1>
             <p className="mt-3 max-w-3xl text-sm text-black/60">
               Launch a durable run that can choose tools and keep pushing your workflow forward without babysitting each
@@ -256,26 +290,22 @@ export function AgentPageClient() {
             <p className="mt-2 text-sm">{runtime.taskQueue}</p>
           </div>
           <div className="rounded-2xl bg-white p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Model provider</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Default provider</p>
             <p className="mt-2 text-sm">{runtime.modelProviderLabel}</p>
-          </div>
-          <div className="rounded-2xl bg-white p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Provider status</p>
-            <p className="mt-2 text-sm">{runtime.providerConfigured ? "Configured" : "Missing setup"}</p>
           </div>
         </div>
 
         {runtime.providerBaseUrl ? (
           <div className="rounded-2xl bg-white p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Provider base URL</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Default provider base URL</p>
             <p className="mt-2 break-all text-sm">{runtime.providerBaseUrl}</p>
           </div>
         ) : null}
 
-        {!runtime.supportsFineTuning ? (
+        {!runtime.managedFineTuningAvailable ? (
           <div className="rounded-2xl border border-black/10 bg-white p-4 text-sm text-black/65">
-            Local mode is active. Agent runs can inspect datasets and use the playground with open-source models, but
-            managed fine-tuning jobs stay disabled until you switch back to `LLM_PROVIDER=openai`.
+            OpenAI credentials are not configured, so managed fine-tuning steps will stay unavailable. Ollama-backed
+            profiles can still power local agent runs and playground experiments.
           </div>
         ) : null}
 
@@ -294,11 +324,7 @@ export function AgentPageClient() {
           <div className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 text-sm">
               <span className="font-medium text-black/70">Pinned dataset</span>
-              <select
-                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3"
-                value={datasetId}
-                onChange={(event) => setDatasetId(event.target.value)}
-              >
+              <select className={selectClassName} value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>
                 <option value="">Let the agent choose</option>
                 {datasets.map((dataset) => (
                   <option key={dataset.id} value={dataset.id}>
@@ -309,13 +335,15 @@ export function AgentPageClient() {
             </label>
 
             <label className="space-y-2 text-sm">
-              <span className="font-medium text-black/70">Base model</span>
-              <input
-                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3"
-                value={baseModel}
-                onChange={(event) => setBaseModel(event.target.value)}
-                placeholder={runtime.defaultBaseModel}
-              />
+              <span className="font-medium text-black/70">Base profile</span>
+              <select className={selectClassName} value={baseProfileId} onChange={(event) => setBaseProfileId(event.target.value)}>
+                <option value="">Choose base profile</option>
+                {profilesData.profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {modelProfileLabel(profile)}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
 
@@ -323,7 +351,7 @@ export function AgentPageClient() {
             <label className="space-y-2 text-sm">
               <span className="font-medium text-black/70">Evaluation prompt</span>
               <input
-                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3"
+                className={selectClassName}
                 value={evaluationPrompt}
                 onChange={(event) => setEvaluationPrompt(event.target.value)}
                 placeholder="Optional prompt to run after training"
@@ -331,13 +359,15 @@ export function AgentPageClient() {
             </label>
 
             <label className="space-y-2 text-sm">
-              <span className="font-medium text-black/70">Agent model</span>
-              <input
-                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3"
-                value={agentModel}
-                onChange={(event) => setAgentModel(event.target.value)}
-                placeholder={runtime.defaultAgentModel}
-              />
+              <span className="font-medium text-black/70">Agent profile</span>
+              <select className={selectClassName} value={agentProfileId} onChange={(event) => setAgentProfileId(event.target.value)}>
+                <option value="">Choose agent profile</option>
+                {profilesData.profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {modelProfileLabel(profile)}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
 
@@ -348,15 +378,42 @@ export function AgentPageClient() {
             </div>
           ) : null}
 
+          {selectedBaseProfile ? (
+            <div className="rounded-2xl bg-white p-4 text-sm text-black/65">
+              Base profile: {modelProfileLabel(selectedBaseProfile)}
+              {selectedBaseProfile.providerConfigured ? "" : " | provider not configured"}
+            </div>
+          ) : null}
+
+          {selectedAgentProfile ? (
+            <div className="rounded-2xl bg-white p-4 text-sm text-black/65">
+              Agent profile: {modelProfileLabel(selectedAgentProfile)}
+              {selectedAgentProfile.providerConfigured ? "" : " | provider not configured"}
+            </div>
+          ) : null}
+
           {actionMessage ? <p className="text-sm text-black/70">{actionMessage}</p> : null}
 
           <div className="flex flex-wrap gap-3">
-            <Button onClick={handleCreateRun} disabled={submitting || !goal.trim() || !runtime.providerConfigured}>
+            <Button
+              onClick={handleCreateRun}
+              disabled={
+                submitting ||
+                !goal.trim() ||
+                !selectedBaseProfile ||
+                !selectedAgentProfile ||
+                !isRunnableProfile(selectedBaseProfile) ||
+                !isRunnableProfile(selectedAgentProfile)
+              }
+            >
               {submitting ? "Starting..." : "Start agent run"}
             </Button>
             <Button variant="ghost" onClick={() => void refreshRuntime()}>
               Refresh runtime
             </Button>
+            {runnableProfiles.length === 0 ? (
+              <p className="self-center text-sm text-black/55">Create at least one configured profile in Settings first.</p>
+            ) : null}
           </div>
         </Card>
 
@@ -383,7 +440,7 @@ export function AgentPageClient() {
                   <StatusBadge value={run.status} />
                 </div>
                 <p className="mt-2 text-sm text-black/60">
-                  {formatDate(run.updatedAt)} | {run.baseModel}
+                  {formatDate(run.updatedAt)} | {run.baseModel} | {run.baseModelProvider ?? "unknown provider"}
                 </p>
               </button>
             ))}
@@ -437,6 +494,18 @@ export function AgentPageClient() {
             <div className="rounded-2xl bg-white p-5">
               <p className="text-xs uppercase tracking-[0.2em] text-black/45">Goal</p>
               <p className="mt-3 text-sm text-black/80">{selectedRun.goal}</p>
+              <p className="mt-5 text-xs uppercase tracking-[0.2em] text-black/45">Model routing</p>
+              <p className="mt-3 text-sm text-black/80">
+                Base: {selectedRun.baseModel} ({selectedRun.baseModelProvider ?? "unknown provider"})
+              </p>
+              <p className="mt-2 text-sm text-black/80">
+                Agent: {selectedRun.agentModel ?? "Pending"} ({selectedRun.agentModelProvider ?? "unknown provider"})
+              </p>
+              {selectedRun.fineTunedModel ? (
+                <p className="mt-2 text-sm text-black/80">
+                  Fine-tuned output: {selectedRun.fineTunedModel} ({selectedRun.fineTunedModelProvider ?? "unknown provider"})
+                </p>
+              ) : null}
               {selectedRun.summary ? (
                 <>
                   <p className="mt-5 text-xs uppercase tracking-[0.2em] text-black/45">Summary</p>

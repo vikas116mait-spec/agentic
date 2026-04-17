@@ -3,3 +3,6 @@ uvicorn[standard]>=0.30.0,<1.0.0
 python-multipart>=0.0.9,<1.0.0
 openai>=1.75.0,<2.0.0
 temporalio>=1.25.0,<2.0.0
+psycopg2-binary>=2.9.9,<3.0.0
+huggingface_hub>=1.8.0,<2.0.0
+python-dotenv>=1.0.1,<2.0.0

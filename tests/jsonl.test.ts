@@ -36,19 +36,36 @@ describe("validateJsonlFile", () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it("accepts valid instruction tuning records", async () => {
+    const filePath = await createTempJsonl(
+      JSON.stringify({
+        instruction: "Explain the claim",
+        input: "A device comprising a sensor and a controller.",
+        output: "The claim covers a device with sensing and control components."
+      })
+    );
+
+    const result = await validateJsonlFile(filePath);
+
+    expect(result.validRecords).toBe(1);
+    expect(result.invalidRecords).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
   it("flags malformed JSON and missing assistant content", async () => {
     const filePath = await createTempJsonl(
       [
         '{"messages":[{"role":"user","content":"Hello"}]}',
         '{"messages":[{"role":"assistant","content":""}]}',
+        '{"instruction":"","output":"test"}',
         '{"messages":'
       ].join("\n")
     );
 
     const result = await validateJsonlFile(filePath);
 
-    expect(result.totalRecords).toBe(3);
-    expect(result.invalidRecords).toBe(3);
-    expect(result.errors.map((error) => error.line)).toEqual([1, 2, 3]);
+    expect(result.totalRecords).toBe(4);
+    expect(result.invalidRecords).toBe(4);
+    expect(result.errors.map((error) => error.line)).toEqual([1, 2, 3, 4]);
   });
 });

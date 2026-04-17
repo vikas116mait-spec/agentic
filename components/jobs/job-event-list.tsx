@@ -10,7 +10,7 @@ export function JobEventList({
     <Card className="space-y-4">
       <div>
         <p className="font-display text-2xl">Events</p>
-        <p className="mt-2 text-sm text-black/60">Cached sync history from OpenAI for easier debugging.</p>
+        <p className="mt-2 text-sm text-black/60">Live training events and sync history for this run.</p>
       </div>
 
       <div className="space-y-3">
