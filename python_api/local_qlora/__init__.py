@@ -52,6 +52,7 @@ summary = {
         "bitsandbytes": available("bitsandbytes"),
     },
     "gpuCount": 0,
+    "unslothAvailable": available("unsloth"),
 }
 
 if summary["dependencies"]["torch"]:
@@ -216,6 +217,43 @@ def _select_single_gpu() -> dict[str, int | str] | None:
     return max(inventory, key=lambda gpu: int(gpu["memoryFreeMb"]))
 
 
+def _poll_gpu_metrics(status_path: Path, process_id: int, stop_event: threading.Event) -> None:
+    """Poll nvidia-smi every 3 seconds and write GPU stats to status.json while training runs."""
+    while not stop_event.is_set():
+        if not _process_is_running(process_id):
+            break
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.used,memory.total,utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            gpus: list[dict] = []
+            for line in result.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) == 5:
+                    try:
+                        gpus.append(
+                            {
+                                "index": int(parts[0]),
+                                "memUsedMb": int(parts[1]),
+                                "memTotalMb": int(parts[2]),
+                                "utilizationPct": int(parts[3]),
+                                "temperatureC": int(parts[4]),
+                            }
+                        )
+                    except ValueError:
+                        pass
+            if gpus:
+                write_status_file(status_path, {"gpuMetrics": gpus})
+        stop_event.wait(timeout=3)
+
+
 def _tee_process_output(process: subprocess.Popen[str], *, log_path: Path, job_id: str) -> None:
     if process.stdout is None:
         return
@@ -308,6 +346,15 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         env=launch_env,
     )
     _tee_process_output(process, log_path=log_path, job_id=config.job_id)
+
+    # Start GPU metrics polling — stops automatically when the process exits
+    _gpu_poll_stop = threading.Event()
+    threading.Thread(
+        target=_poll_gpu_metrics,
+        args=(Path(config.status_path), process.pid, _gpu_poll_stop),
+        name=f"gpu-metrics-{config.job_id[:8]}",
+        daemon=True,
+    ).start()
 
     write_status_file(
         Path(config.status_path),
@@ -415,6 +462,9 @@ def inspect_local_training_job(job_record: dict[str, Any]) -> dict[str, Any]:
             "datasetStats": status_payload.get("datasetStats"),
             "progress": status_payload.get("progress"),
             "metrics": status_payload.get("metrics"),
+            "lossHistory": status_payload.get("lossHistory") or [],
+            "gpuMetrics": status_payload.get("gpuMetrics") or [],
+            "unslothActive": status_payload.get("unslothActive"),
         },
     }
 

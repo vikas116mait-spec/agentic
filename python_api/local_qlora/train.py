@@ -30,6 +30,7 @@ class LocalProgressCallback(TrainerCallback):
         self.gpu_count = gpu_count
         self.started_at = time.monotonic()
         self.last_progress: dict[str, Any] = {}
+        self.loss_history: list[dict[str, Any]] = []
 
     def _progress_payload(self, state: Any, logs: dict[str, Any] | None = None) -> dict[str, Any]:
         hyperparameters = self.config.resolved_hyperparameters()
@@ -94,12 +95,19 @@ class LocalProgressCallback(TrainerCallback):
         )
 
     def on_log(self, args: Any, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        progress = self._progress_payload(state, logs)
+        if logs and logs.get("loss") is not None:
+            self.loss_history.append({
+                "step": int(getattr(state, "global_step", 0) or 0),
+                "loss": round(float(logs["loss"]), 5),
+            })
         write_status_file(
             self.status_path,
             {
                 "stage": "training",
                 "statusMessage": "Training LoRA adapters on the local runtime.",
-                "progress": self._progress_payload(state, logs),
+                "progress": progress,
+                "lossHistory": self.loss_history,
             },
         )
 
@@ -196,8 +204,11 @@ def _instantiate_trainer(
         "args": training_args,
         "train_dataset": train_dataset,
         "eval_dataset": eval_dataset,
-        "peft_config": peft_config,
     }
+
+    # peft_config is None when Unsloth is active (LoRA already fused into model)
+    if peft_config is not None:
+        trainer_kwargs["peft_config"] = peft_config
 
     signature = inspect.signature(SFTTrainer.__init__)
     parameters = signature.parameters
@@ -261,7 +272,14 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
         )
 
         model, tokenizer, peft_config, torch_module = load_quantized_model(config)
-        append_event(events_path, "info", "Loaded 4-bit base model and attached LoRA adapters.", event_type="model_ready")
+        unsloth_active = peft_config is None
+        append_event(
+            events_path,
+            "info",
+            f"Loaded model via {'Unsloth (2x faster, ~70% less VRAM)' if unsloth_active else 'HuggingFace + PEFT (standard mode)'}.",
+            event_type="model_ready",
+        )
+        write_status_file(status_path, {"unslothActive": unsloth_active})
 
         training_args = _instantiate_sft_config(
             _build_sft_config_kwargs(config=config, torch_module=torch_module, has_eval=eval_dataset is not None)
@@ -274,7 +292,8 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
             eval_dataset=eval_dataset,
             training_args=training_args,
         )
-        trainer.add_callback(LocalProgressCallback(config=config, status_path=status_path, gpu_count=local_gpu_count()))
+        progress_cb = LocalProgressCallback(config=config, status_path=status_path, gpu_count=local_gpu_count())
+        trainer.add_callback(progress_cb)
 
         append_event(events_path, "info", "Starting local QLoRA fine-tuning loop.", event_type="training_started")
         write_status_file(
@@ -306,6 +325,50 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
         )
         trainer.model.save_pretrained(model_output_path)
         tokenizer.save_pretrained(model_output_path)
+
+        # ── GGUF export (only available via Unsloth) ──────────────────────────
+        gguf_path: str | None = None
+        if config.export_gguf:
+            try:
+                from python_api.local_qlora.export import export_gguf, push_to_ollama
+
+                write_status_file(
+                    status_path,
+                    {
+                        "stage": "exporting",
+                        "statusMessage": f"Exporting GGUF ({config.gguf_quantization}). This may take a few minutes.",
+                    },
+                )
+                append_event(
+                    events_path,
+                    "info",
+                    f"Exporting to GGUF format ({config.gguf_quantization}).",
+                    event_type="gguf_export_started",
+                )
+                gguf_path = export_gguf(trainer.model, tokenizer, model_output_path, config.gguf_quantization)
+                append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
+
+                if config.push_to_ollama and config.ollama_model_name:
+                    append_event(
+                        events_path,
+                        "info",
+                        f"Pushing to Ollama as '{config.ollama_model_name}'.",
+                        event_type="ollama_push_started",
+                    )
+                    push_to_ollama(gguf_path, config.ollama_model_name)
+                    append_event(
+                        events_path,
+                        "info",
+                        f"Model available in Ollama as '{config.ollama_model_name}'.",
+                        event_type="ollama_push_done",
+                    )
+            except Exception as export_error:
+                append_event(
+                    events_path,
+                    "warning",
+                    f"GGUF export failed (adapter is still saved): {export_error}",
+                    event_type="gguf_export_failed",
+                )
 
         metrics_payload = {
             "train": train_metrics,
@@ -352,8 +415,10 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                     {"type": "local_adapter", "path": config.model_output_path},
                     {"type": "local_metrics", "path": str(metrics_path)},
                     {"type": "local_log", "path": config.log_path},
+                    *([{"type": "local_gguf", "path": gguf_path}] if gguf_path else []),
                 ],
                 "metrics": metrics_payload,
+                "lossHistory": progress_cb.loss_history,
             },
         )
     except Exception as error:  # pragma: no cover

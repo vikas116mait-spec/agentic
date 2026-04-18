@@ -13,6 +13,7 @@ import type { ModelProfilesResponse } from "@/lib/types";
 type DatasetOption = { id: string; name: string };
 
 const selectClassName = "w-full rounded-2xl border border-black/10 bg-white px-4 py-3";
+const checkboxLabelClassName = "flex items-center gap-2 text-sm text-black/70 cursor-pointer";
 
 export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: string }) {
   const router = useRouter();
@@ -22,6 +23,12 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
   const [profileId, setProfileId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Export options — only relevant for local QLoRA jobs
+  const [exportGguf, setExportGguf] = useState(false);
+  const [ggufQuantization, setGgufQuantization] = useState("q4_k_m");
+  const [pushToOllama, setPushToOllama] = useState(false);
+  const [ollamaModelName, setOllamaModelName] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -54,6 +61,8 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
     [fineTuningProfiles, profileId]
   );
 
+  const isLocalProvider = selectedProfile?.provider === "local";
+
   async function handleCreate() {
     if (!selectedProfile) {
       setError("Choose a fine-tuning profile first.");
@@ -72,7 +81,13 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
         body: JSON.stringify({
           datasetId,
           baseModel: selectedProfile.model,
-          modelProvider: selectedProfile.provider
+          modelProvider: selectedProfile.provider,
+          ...(isLocalProvider && {
+            exportGguf,
+            ggufQuantization,
+            pushToOllama,
+            ollamaModelName,
+          }),
         })
       });
       router.push(`/jobs/${payload.id}`);
@@ -151,6 +166,67 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
         </div>
       ) : null}
 
+      {isLocalProvider ? (
+        <div className="rounded-[1.5rem] border border-black/8 bg-white/80 p-5 space-y-4">
+          <p className="text-sm font-medium text-black/70">Export options</p>
+
+          <label className={checkboxLabelClassName}>
+            <input
+              type="checkbox"
+              checked={exportGguf}
+              onChange={(e) => setExportGguf(e.target.checked)}
+              className="h-4 w-4 rounded"
+            />
+            Export to GGUF after training (requires Unsloth)
+          </label>
+
+          {exportGguf ? (
+            <div className="ml-6 space-y-3">
+              <label className="space-y-1 text-sm">
+                <span className="text-black/60">Quantization format</span>
+                <select
+                  className={selectClassName}
+                  value={ggufQuantization}
+                  onChange={(e) => setGgufQuantization(e.target.value)}
+                >
+                  <option value="q4_k_m">Q4_K_M — recommended, best speed/quality balance</option>
+                  <option value="q8_0">Q8_0 — higher quality, larger file</option>
+                  <option value="f16">F16 — full precision, largest file</option>
+                  <option value="q2_k">Q2_K — smallest file, lower quality</option>
+                  <option value="q5_k_m">Q5_K_M — high quality, moderate size</option>
+                </select>
+              </label>
+
+              <label className={checkboxLabelClassName}>
+                <input
+                  type="checkbox"
+                  checked={pushToOllama}
+                  onChange={(e) => setPushToOllama(e.target.checked)}
+                  className="h-4 w-4 rounded"
+                />
+                Push to local Ollama after export
+              </label>
+
+              {pushToOllama ? (
+                <label className="space-y-1 text-sm">
+                  <span className="text-black/60">Ollama model name</span>
+                  <input
+                    type="text"
+                    placeholder="e.g. my-fine-tuned-model"
+                    value={ollamaModelName}
+                    onChange={(e) => setOllamaModelName(e.target.value)}
+                    className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                  />
+                  <p className="text-xs text-black/45">
+                    After training, run <code className="font-mono">ollama run {ollamaModelName || "your-model-name"}</code> to use it.
+                  </p>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {error ? <p className="text-sm text-danger">{error}</p> : null}
 
       <Button disabled={loading || !datasetId || !selectedProfile} onClick={handleCreate}>
@@ -158,7 +234,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
       </Button>
 
       <p className="text-sm text-black/45">
-        Tip: use Local GPU QLoRA for free local experiments.
+        Tip: use Local GPU QLoRA for free local experiments. Install Unsloth for 2x speed and 70% less VRAM.
       </p>
     </div>
   );

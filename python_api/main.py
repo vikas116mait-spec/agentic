@@ -73,6 +73,10 @@ class CreateJobRequest(BaseModel):
     baseModel: str = DEFAULT_BASE_MODEL
     modelProvider: str | None = None
     hyperparameters: dict[str, Any] | None = None
+    exportGguf: bool = False
+    ggufQuantization: str = "q4_k_m"
+    pushToOllama: bool = False
+    ollamaModelName: str = ""
 
 
 class PlaygroundRunRequest(BaseModel):
@@ -241,7 +245,16 @@ def get_jobs():
 @app.post("/jobs")
 def create_job(request: CreateJobRequest):
     try:
-        return create_job_record(request.datasetId, request.baseModel, request.hyperparameters, request.modelProvider)
+        return create_job_record(
+            request.datasetId,
+            request.baseModel,
+            request.hyperparameters,
+            request.modelProvider,
+            export_gguf=request.exportGguf,
+            gguf_quantization=request.ggufQuantization,
+            push_to_ollama=request.pushToOllama,
+            ollama_model_name=request.ollamaModelName,
+        )
     except Exception as error:
         return handle_api_error(error)
 

@@ -46,7 +46,6 @@ const MODEL_OPTIONS: Record<ProfileDraft["provider"], ModelOption[]> = {
     { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Tiny free smoke-test model" },
     { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Smallest public starter model" },
     { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Best first open-source fine-tune" },
-    { value: "google/gemma-2-2b-it", label: "Gemma 2 2B Instruct", hint: "Free Gemma option after accepting the Gemma license" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact Microsoft instruct model" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Popular open instruct model" },
     { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Stronger open-source cloud fine-tune" }
@@ -55,7 +54,6 @@ const MODEL_OPTIONS: Record<ProfileDraft["provider"], ModelOption[]> = {
     { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Fastest free smoke-test model" },
     { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Fastest free local starter" },
     { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended first local fine-tune" },
-    { value: "google/gemma-2-2b-it", label: "Gemma 2 2B Instruct", hint: "Free Gemma experiment after accepting the Gemma license" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact model with good quality per GPU" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Strong open instruct model if you want another family" },
     { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Larger free model if you want stronger quality" }

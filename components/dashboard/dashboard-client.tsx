@@ -10,7 +10,8 @@ import {
   FileStack,
   Settings2,
   Sparkles,
-  Upload
+  Upload,
+  Zap
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -56,30 +57,30 @@ const steps: Step[] = [
   },
   {
     icon: CheckCircle2,
-    title: "Train and export",
-    hint: "Run, watch, download.",
+    title: "Train and export to GGUF",
+    hint: "Run with Unsloth, watch live loss, export.",
     done: (d) => d.totalJobs > 0
   }
 ];
 
 const pillars = [
   {
-    icon: Cpu,
-    eyebrow: "Run Locally",
-    title: "Use your own GPU first.",
-    copy: "Train on your machine."
+    icon: Zap,
+    eyebrow: "Unsloth Accelerated",
+    title: "2x faster. 70% less VRAM.",
+    copy: "Install Unsloth and your local training runs are automatically accelerated — no config changes needed."
   },
   {
     icon: FileStack,
     eyebrow: "No-Code Training",
     title: "Dataset, model, start.",
-    copy: "Keep the flow simple."
+    copy: "Upload a JSONL dataset, pick a base model, and hit train. SFT, LoRA, and QLoRA all work out of the box."
   },
   {
     icon: Download,
-    eyebrow: "Export Models",
-    title: "Take the trained result with you.",
-    copy: "Download the adapter."
+    eyebrow: "Export Anywhere",
+    title: "GGUF → Ollama in one step.",
+    copy: "After training, export to GGUF and push directly to your local Ollama — instantly usable in the Playground."
   }
 ];
 
@@ -114,9 +115,11 @@ export function DashboardClient() {
             </div>
 
             <h1 className="mt-5 max-w-3xl font-display text-4xl leading-tight sm:text-5xl">
-              Train a custom model locally without getting lost in setup.
+              Fine-tune locally with Unsloth — 2x faster, 70% less VRAM.
             </h1>
-            <p className="mt-4 max-w-2xl text-sm leading-7 text-black/62 sm:text-base">Model. Data. Train. Export.</p>
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-black/62 sm:text-base">
+              Upload data. Pick a model. Train with Unsloth. Export to GGUF. Run in Ollama.
+            </p>
 
             <div className="mt-6 flex flex-wrap gap-3">
               <Link href="/jobs/new">
@@ -180,21 +183,25 @@ export function DashboardClient() {
             </div>
 
             <div className="mt-6 rounded-[1.8rem] border border-white/10 bg-white/5 p-5">
-              <p className="text-xs uppercase tracking-[0.2em] text-white/55">Recommended model families</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-white/55">Unsloth-supported models</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 {[
-                  "Qwen 0.5B / 1.5B / 3B / 7B",
-                  "Gemma 2 2B",
-                  "Phi 3.5 Mini",
-                  "Mistral 7B",
-                  "Llama 3.2 3B"
+                  "Llama 3.1 / 3.2 / 3.3",
+                  "Qwen 2.5 0.5B–72B",
+                  "Gemma 3",
+                  "Mistral v0.3",
+                  "Phi-4",
+                  "DeepSeek-R1",
+                  "Gemma 2"
                 ].map((label) => (
                   <span key={label} className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-white/80">
                     {label}
                   </span>
                 ))}
               </div>
-              <p className="mt-4 text-sm leading-6 text-white/68">Start small. Scale up later.</p>
+              <p className="mt-4 text-sm leading-6 text-white/68">
+                500+ models supported. Start with 3B, scale up when ready.
+              </p>
             </div>
           </div>
         </div>
@@ -220,34 +227,29 @@ export function DashboardClient() {
       </div>
 
       {!allDone ? (
-        <Card className="space-y-3 bg-white/88">
-          <p className="font-display text-2xl">Recommended next step</p>
-          <p className="text-sm leading-7 text-black/56">
-            {data.totalDatasets === 0
-              ? "Upload a dataset."
-              : data.totalJobs === 0
-                ? "Start the first run."
-                : "Open the latest run."}
-          </p>
+        <Card className="flex items-center justify-between gap-4 bg-white/88">
           <div>
-            <Link href={data.totalDatasets === 0 ? "/datasets/new" : "/jobs/new"}>
-              <Button>{data.totalDatasets === 0 ? "Upload dataset" : "Start training"}</Button>
-            </Link>
+            <p className="font-display text-xl">
+              {data.totalDatasets === 0 ? "Upload your first dataset" : "Start your first training run"}
+            </p>
+            <p className="mt-1 text-sm text-black/50">
+              {data.totalDatasets === 0
+                ? "Bring a .jsonl file or enter data manually."
+                : "Pick a dataset and a base model to begin."}
+            </p>
           </div>
+          <Link href={data.totalDatasets === 0 ? "/datasets/new" : "/jobs/new"} className="shrink-0">
+            <Button>{data.totalDatasets === 0 ? "Upload dataset" : "Start training"}</Button>
+          </Link>
         </Card>
       ) : null}
 
       <Card className="bg-white/88">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="font-display text-2xl">Recent training runs</p>
-            <p className="mt-2 text-sm text-black/55">Latest runs.</p>
-          </div>
+          <p className="font-display text-2xl">Recent training runs</p>
           {data.latestActivity.length > 0 ? (
             <Link href="/jobs">
-              <Button variant="ghost" size="sm">
-                View all
-              </Button>
+              <Button variant="ghost" size="sm">View all</Button>
             </Link>
           ) : null}
         </div>
@@ -255,17 +257,18 @@ export function DashboardClient() {
         {data.latestActivity.length === 0 ? (
           <p className="mt-4 text-sm text-black/50">No runs yet. Upload a dataset, then start fine-tuning.</p>
         ) : (
-          <div className="mt-5 space-y-2">
+          <div className="mt-4 divide-y divide-black/5 overflow-hidden rounded-2xl border border-black/8">
             {data.latestActivity.map((job) => (
-              <Link key={job.id} href={`/jobs/${job.id}`} className="block">
-                <div className="flex items-center justify-between rounded-[1.4rem] border border-black/6 bg-canvas/75 px-4 py-3 transition hover:bg-canvas">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{job.datasetName}</p>
-                    <p className="truncate text-xs text-black/45">
-                      {job.baseModel} · {formatDate(job.createdAt)}
-                    </p>
-                  </div>
+              <Link key={job.id} href={`/jobs/${job.id}`} className="group flex items-center justify-between gap-4 bg-white/60 px-4 py-3 transition hover:bg-white">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{job.datasetName}</p>
+                  <p className="truncate text-xs text-black/40 mt-0.5">
+                    {job.baseModel} · {formatDate(job.createdAt)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
                   <StatusBadge value={job.status} />
+                  <ArrowRight className="h-3.5 w-3.5 text-black/20 transition group-hover:translate-x-0.5 group-hover:text-black/40" />
                 </div>
               </Link>
             ))}

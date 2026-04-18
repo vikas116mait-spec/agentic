@@ -68,6 +68,23 @@ MODEL_PROFILE_DEFAULT_KEYS = {
     "agentModelProfileId",
     "jobBaseProfileId",
 }
+GATED_MODEL_REPLACEMENTS = {
+    "google/gemma-2-2b-it": [
+        "Qwen/Qwen2.5-1.5B-Instruct",
+        "Qwen/Qwen2.5-3B-Instruct",
+        "microsoft/Phi-3.5-mini-instruct",
+    ],
+    "meta-llama/Llama-3.2-3B-Instruct": [
+        "Qwen/Qwen2.5-3B-Instruct",
+        "microsoft/Phi-3.5-mini-instruct",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+    ],
+}
+SEEDED_GATED_PROFILE_MODELS = {
+    "profile-local-gemma-2b": "google/gemma-2-2b-it",
+    "profile-local-llama-32-3b": "meta-llama/Llama-3.2-3B-Instruct",
+    "profile-hf-gemma-2b": "google/gemma-2-2b-it",
+}
 
 
 def _slugify_archive_name(value: str) -> str:
@@ -103,6 +120,29 @@ def _resolve_local_job_path(raw_path: str | None) -> Path:
         raise ApiError("NOT_FOUND", "Requested local training artifact was not found on disk.", 404)
 
     return resolved
+
+
+def _is_seeded_gated_profile(profile: dict[str, Any]) -> bool:
+    expected_model = SEEDED_GATED_PROFILE_MODELS.get(profile.get("id"))
+    return bool(expected_model and profile.get("model") == expected_model)
+
+
+def _ensure_accessible_fine_tuning_model(base_model: str, model_provider: str) -> None:
+    if model_provider not in {"huggingface", "local"}:
+        return
+
+    alternatives = GATED_MODEL_REPLACEMENTS.get(base_model)
+    if not alternatives:
+        return
+
+    raise ApiError(
+        "MODEL_ACCESS_RESTRICTED",
+        (
+            f"`{base_model}` requires separate Hugging Face approval and is not available in this workspace. "
+            f"Use one of: {', '.join(alternatives)}."
+        ),
+        400,
+    )
 
 
 def get_model_provider(provider: str | None = None) -> str:
@@ -235,7 +275,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
     ollama_medium_model = os.environ.get("OLLAMA_BASE_MODEL") or "qwen3:8b"
     ollama_small_model = os.environ.get("OLLAMA_SMALL_MODEL") or "qwen3:4b"
 
-    return [
+    profiles = [
         {
             "id": "profile-small",
             "name": "Small",
@@ -317,32 +357,12 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "updatedAt": now,
         },
         {
-            "id": "profile-local-gemma-2b",
-            "name": "Gemma 2 2B Local",
-            "provider": "local",
-            "model": "google/gemma-2-2b-it",
-            "category": "medium",
-            "description": "Gemma-based local fine-tune after accepting the Gemma license.",
-            "createdAt": now,
-            "updatedAt": now,
-        },
-        {
             "id": "profile-local-phi-35-mini",
             "name": "Phi 3.5 Mini Local",
             "provider": "local",
             "model": "microsoft/Phi-3.5-mini-instruct",
             "category": "medium",
             "description": "Compact Microsoft instruct model for local QLoRA experiments.",
-            "createdAt": now,
-            "updatedAt": now,
-        },
-        {
-            "id": "profile-local-llama-32-3b",
-            "name": "Llama 3.2 3B Local",
-            "provider": "local",
-            "model": "meta-llama/Llama-3.2-3B-Instruct",
-            "category": "large",
-            "description": "Meta Llama local fine-tune after accepting the Llama license.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -367,16 +387,6 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "updatedAt": now,
         },
         {
-            "id": "profile-hf-gemma-2b",
-            "name": "Gemma 2 2B SFT",
-            "provider": "huggingface",
-            "model": "google/gemma-2-2b-it",
-            "category": "medium",
-            "description": "Gemma cloud fine-tune after accepting the Gemma license.",
-            "createdAt": now,
-            "updatedAt": now,
-        },
-        {
             "id": "profile-hf-phi-35-mini",
             "name": "Phi 3.5 Mini SFT",
             "provider": "huggingface",
@@ -397,6 +407,8 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "updatedAt": now,
         },
     ]
+
+    return [profile for profile in profiles if not _is_seeded_gated_profile(profile)]
 
 
 def _first_profile_id(
@@ -462,6 +474,7 @@ def _ensure_model_profiles_initialized(state: dict[str, Any]) -> None:
         state["model_profile_defaults"] = _default_model_profile_defaults(state["model_profiles"])
         state["model_profiles_initialized"] = True
     else:
+        state["model_profiles"] = [profile for profile in state["model_profiles"] if not _is_seeded_gated_profile(profile)]
         existing_ids = {profile["id"] for profile in state["model_profiles"]}
         missing_profiles = [deepcopy(profile) for profile in default_profiles if profile["id"] not in existing_ids]
         if missing_profiles:
@@ -898,6 +911,10 @@ def _build_local_training_job_config(
     dataset: dict[str, Any],
     base_model: str,
     hyperparameters: dict[str, Any] | None = None,
+    export_gguf: bool = False,
+    gguf_quantization: str = "q4_k_m",
+    push_to_ollama: bool = False,
+    ollama_model_name: str = "",
 ) -> LocalQLoraJobConfig:
     working_dir = ROOT / "uploads_python" / "jobs" / job_id
     output_dir = working_dir / "artifacts"
@@ -920,6 +937,10 @@ def _build_local_training_job_config(
         in {"1", "true", "yes", "on"},
         seed=int(os.environ.get("LOCAL_TRAINING_SEED", "42")),
         eval_ratio=float(os.environ.get("LOCAL_TRAINING_EVAL_RATIO", "0.1")),
+        export_gguf=export_gguf,
+        gguf_quantization=gguf_quantization,
+        push_to_ollama=push_to_ollama,
+        ollama_model_name=ollama_model_name,
     )
 
 
@@ -954,12 +975,17 @@ def create_job_record(
     base_model: str,
     hyperparameters: dict[str, Any] | None = None,
     provider: str | None = None,
+    export_gguf: bool = False,
+    gguf_quantization: str = "q4_k_m",
+    push_to_ollama: bool = False,
+    ollama_model_name: str = "",
 ) -> dict[str, Any]:
     model_provider = get_model_provider(provider or "openai")
     ensure_fine_tuning_available(model_provider)
     dataset = retrieve_dataset_detail(dataset_id)
     if dataset["validationStatus"] != "VALID":
         raise ApiError("DATASET_INVALID", "Only valid datasets can be used for fine-tuning.", 400)
+    _ensure_accessible_fine_tuning_model(base_model, model_provider)
 
     if model_provider == "local":
         job_id = uuid4().hex
@@ -968,6 +994,10 @@ def create_job_record(
             dataset=dataset,
             base_model=base_model,
             hyperparameters=hyperparameters,
+            export_gguf=export_gguf,
+            gguf_quantization=gguf_quantization,
+            push_to_ollama=push_to_ollama,
+            ollama_model_name=ollama_model_name,
         )
         try:
             runtime_summary = ensure_local_training_ready(allow_cpu_fallback=config.allow_cpu_fallback)
@@ -1010,6 +1040,7 @@ def create_job_record(
             "localMetricsPath": config.metrics_path,
             "localArtifactsPath": config.model_output_path,
             "progressJson": submission["progressJson"],
+            "ollamaModelName": ollama_model_name or None,
         }
 
         def mutator(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:

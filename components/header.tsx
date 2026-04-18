@@ -1,23 +1,23 @@
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function Header() {
   return (
-    <header className="flex flex-col gap-4 rounded-[2rem] border border-black/10 bg-white/75 p-5 shadow-panel backdrop-blur md:flex-row md:items-center md:justify-between">
-      <div>
-        <p className="text-xs uppercase tracking-[0.25em] text-black/40">Model. Data. Train.</p>
-        <h2 className="mt-1.5 font-display text-2xl">Start a fine-tune without digging through extra screens.</h2>
-      </div>
-      <div className="flex shrink-0 gap-3">
+    <header className="flex items-center justify-between gap-4 rounded-[1.5rem] border border-black/8 bg-white/70 px-5 py-3.5 shadow-panel backdrop-blur">
+      <p className="text-sm font-medium text-black/40 tracking-wide">Fine-Tuning Studio</p>
+      <div className="flex shrink-0 items-center gap-2">
+        <Link href="/datasets/new">
+          <Button variant="ghost" size="sm">
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            Dataset
+          </Button>
+        </Link>
         <Link href="/jobs/new">
           <Button size="sm">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Start fine-tuning
+            New run
           </Button>
-        </Link>
-        <Link href="/datasets/new">
-          <Button variant="ghost" size="sm">Upload dataset</Button>
         </Link>
       </div>
     </header>

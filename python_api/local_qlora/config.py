@@ -25,6 +25,10 @@ class LocalQLoraJobConfig:
     allow_cpu_fallback: bool = False
     seed: int = 42
     eval_ratio: float = 0.1
+    export_gguf: bool = False
+    gguf_quantization: str = "q4_k_m"
+    push_to_ollama: bool = False
+    ollama_model_name: str = ""
 
     def resolved_hyperparameters(self) -> dict[str, Any]:
         defaults = {
@@ -62,6 +66,10 @@ class LocalQLoraJobConfig:
             "allowCpuFallback": self.allow_cpu_fallback,
             "seed": self.seed,
             "evalRatio": self.eval_ratio,
+            "exportGguf": self.export_gguf,
+            "ggufQuantization": self.gguf_quantization,
+            "pushToOllama": self.push_to_ollama,
+            "ollamaModelName": self.ollama_model_name,
         }
 
     def write(self) -> str:
@@ -91,4 +99,8 @@ class LocalQLoraJobConfig:
             allow_cpu_fallback=bool(payload.get("allowCpuFallback", False)),
             seed=int(payload.get("seed", 42)),
             eval_ratio=float(payload.get("evalRatio", 0.1)),
+            export_gguf=bool(payload.get("exportGguf", False)),
+            gguf_quantization=str(payload.get("ggufQuantization", "q4_k_m")),
+            push_to_ollama=bool(payload.get("pushToOllama", False)),
+            ollama_model_name=str(payload.get("ollamaModelName", "")),
         )

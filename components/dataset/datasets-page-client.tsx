@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Database } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -56,17 +56,27 @@ export function DatasetsPageClient() {
       </div>
 
       {datasets.map((dataset) => (
-        <Link key={dataset.id} href={`/datasets/${dataset.id}`} className="block">
-          <div className="flex items-center justify-between rounded-[1.5rem] border border-black/8 bg-white/80 p-5 shadow-sm transition hover:shadow-md">
-            <div className="min-w-0">
-              <p className="truncate font-semibold">{dataset.name}</p>
-              <p className="mt-1 text-sm text-black/50">
-                {formatNumber(dataset.recordCount)} records · {formatDate(dataset.createdAt)}
-              </p>
+        <Link key={dataset.id} href={`/datasets/${dataset.id}`} className="group block">
+          <div className="flex items-center gap-4 rounded-[1.5rem] border border-black/8 bg-white/80 px-5 py-4 shadow-sm transition-all hover:border-black/14 hover:shadow-md">
+            {/* record count bar */}
+            <div className="hidden sm:flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-brand/8 text-brand">
+              <Database className="h-4 w-4" />
             </div>
-            <div className="ml-4 flex shrink-0 items-center gap-3">
+
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-semibold">{dataset.name}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                <span className="text-xs font-medium text-black/55">
+                  {formatNumber(dataset.recordCount)} records
+                </span>
+                <span className="text-xs text-black/25">·</span>
+                <span className="text-xs text-black/40">{formatDate(dataset.createdAt)}</span>
+              </div>
+            </div>
+
+            <div className="ml-2 flex shrink-0 items-center gap-3">
               <StatusBadge value={dataset.validationStatus} />
-              <ArrowRight className="h-4 w-4 text-black/30" />
+              <ArrowRight className="h-4 w-4 text-black/20 transition group-hover:translate-x-0.5 group-hover:text-black/40" />
             </div>
           </div>
         </Link>

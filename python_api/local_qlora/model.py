@@ -27,6 +27,7 @@ def local_training_runtime_summary() -> dict[str, Any]:
     return {
         "enabled": local_training_enabled(),
         "gpuCount": local_gpu_count(),
+        "unslothAvailable": _module_available("unsloth"),
         "dependencies": {
             "torch": _module_available("torch"),
             "transformers": _module_available("transformers"),
@@ -52,18 +53,57 @@ def _resolve_target_modules(model_id: str, override: list[str] | None = None) ->
 def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, Any]:
     try:
         import torch
-        from peft import LoraConfig, prepare_model_for_kbit_training
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    except ImportError as error:  # pragma: no cover
+    except ImportError as error:
         raise RuntimeError(
-            "Install `torch`, `transformers`, `peft`, and `bitsandbytes` to enable local GPU QLoRA training."
+            "Install `torch` to enable local GPU training."
         ) from error
 
     gpu_available = torch.cuda.is_available()
     if not gpu_available and not config.allow_cpu_fallback:
         raise RuntimeError(
-            "Local GPU QLoRA training requires a CUDA-visible GPU. Set LOCAL_TRAINING_ALLOW_CPU_FALLBACK=1 to override."
+            "Local GPU training requires a CUDA-visible GPU. Set LOCAL_TRAINING_ALLOW_CPU_FALLBACK=1 to override."
         )
+
+    hyperparameters = config.resolved_hyperparameters()
+
+    # ── Unsloth path: 2x faster, 70% less VRAM ───────────────────────────────
+    try:
+        from unsloth import FastLanguageModel
+
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=config.base_model,
+            max_seq_length=int(hyperparameters["max_seq_length"]),
+            load_in_4bit=True,
+            dtype=None,  # auto-detects bfloat16 / float16
+        )
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=int(hyperparameters["lora_r"]),
+            lora_alpha=int(hyperparameters["lora_alpha"]),
+            lora_dropout=float(hyperparameters["lora_dropout"]),
+            target_modules=_resolve_target_modules(config.base_model),
+            bias="none",
+            use_gradient_checkpointing="unsloth",  # saves extra 30% VRAM vs standard
+            random_state=config.seed,
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
+
+        # peft_config=None signals to the trainer that LoRA is already applied
+        return model, tokenizer, None, torch
+
+    except ImportError:
+        pass  # Unsloth not installed — fall through to standard HF path
+
+    # ── Fallback: standard HuggingFace + PEFT (original behaviour) ───────────
+    try:
+        from peft import LoraConfig, prepare_model_for_kbit_training
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    except ImportError as error:
+        raise RuntimeError(
+            "Install `torch`, `transformers`, `peft`, and `bitsandbytes` to enable local GPU QLoRA training."
+        ) from error
 
     compute_dtype = torch.bfloat16 if gpu_available and torch.cuda.is_bf16_supported() else torch.float16
     quantization_config = BitsAndBytesConfig(
@@ -87,7 +127,6 @@ def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, An
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
-    hyperparameters = config.resolved_hyperparameters()
     peft_config = LoraConfig(
         r=int(hyperparameters["lora_r"]),
         lora_alpha=int(hyperparameters["lora_alpha"]),
