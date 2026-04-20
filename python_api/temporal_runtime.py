@@ -8,8 +8,12 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from python_api.agentic_activities import run_agent_turn_activity
+from python_api.env import ensure_env_loaded
 from python_api.agentic_workflow import AgentRunWorkflow
 from python_api.services import provider_status_payload
+from python_api.store import storage_status_payload
+
+ensure_env_loaded()
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -131,6 +135,7 @@ class TemporalRuntime:
             "error": self.error,
             "autoStartDevServer": self.auto_start_dev_server,
             **provider_status_payload(),
+            "storage": storage_status_payload(),
         }
 
 

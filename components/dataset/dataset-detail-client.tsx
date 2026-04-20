@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { ValidationSummaryCard } from "@/components/dataset/validation-summary-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { LoadingState } from "@/components/ui/loading-state";
 import { pythonApiFetch } from "@/lib/python-api";
 import { formatBytes, formatDate } from "@/lib/utils";
@@ -25,17 +25,15 @@ type DatasetDetail = {
 };
 
 type RuntimeStatus = {
-  modelProviderLabel: string;
-  supportsFineTuning: boolean;
+  managedFineTuningAvailable: boolean;
 };
 
 export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
-  const router = useRouter();
   const [dataset, setDataset] = useState<DatasetDetail | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -51,71 +49,70 @@ export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
 
   async function handleUploadToOpenAI() {
     setUploading(true);
-    setActionMessage(null);
+    setUploadMessage(null);
     try {
       const updated = await pythonApiFetch<DatasetDetail>(`/datasets/${datasetId}/upload-to-openai`, {
         method: "POST"
       });
       setDataset(updated);
-      setActionMessage("Training file uploaded.");
-      router.refresh();
+      setUploadMessage("Uploaded to OpenAI — ready to train.");
     } catch (requestError) {
-      setActionMessage(requestError instanceof Error ? requestError.message : "Upload failed.");
+      setUploadMessage(requestError instanceof Error ? requestError.message : "Upload failed.");
     } finally {
       setUploading(false);
     }
   }
 
-  if (error) {
-    return <ErrorAlert title="Could not load dataset" description={error} />;
-  }
+  if (error) return <ErrorAlert title="Could not load dataset" description={error} />;
+  if (!dataset) return <LoadingState variant="detail" />;
 
-  if (!dataset) {
-    return <LoadingState label="Loading dataset..." />;
-  }
+  const isValid = dataset.validationStatus === "VALID";
+  const canUploadToOpenAI = isValid && runtime?.managedFineTuningAvailable !== false && !dataset.openaiFileId;
 
   return (
     <div className="space-y-6">
-      <Card className="space-y-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <Breadcrumb crumbs={[{ label: "Datasets", href: "/datasets" }, { label: dataset.name }]} />
+      <Card className="space-y-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-black/45">Dataset detail</p>
-            <h1 className="mt-2 font-display text-4xl">{dataset.name}</h1>
-            <p className="mt-3 text-sm text-black/60">
-              {dataset.originalFilename} | {formatBytes(dataset.fileSizeBytes)} | {formatDate(dataset.createdAt)}
+            <h1 className="font-display text-3xl">{dataset.name}</h1>
+            <p className="mt-1.5 text-sm text-black/50">
+              {formatBytes(dataset.fileSizeBytes)} · {formatDate(dataset.createdAt)}
             </p>
           </div>
+          <StatusBadge value={dataset.validationStatus} />
+        </div>
+
+        {isValid ? (
           <div className="flex flex-wrap gap-3">
-            <StatusBadge value={dataset.validationStatus} />
             <Link href={`/jobs/new?datasetId=${dataset.id}`}>
-              <Button>Create job</Button>
+              <Button>Start fine-tuning job</Button>
             </Link>
+            {canUploadToOpenAI && (
+              <Button variant="ghost" onClick={handleUploadToOpenAI} disabled={uploading}>
+                {uploading ? "Uploading..." : "Pre-upload to OpenAI"}
+              </Button>
+            )}
           </div>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <Button
-            className="w-full"
-            disabled={dataset.validationStatus !== "VALID" || uploading || runtime?.supportsFineTuning === false}
-            onClick={handleUploadToOpenAI}
-          >
-            {uploading ? "Uploading..." : runtime?.supportsFineTuning === false ? "Training upload unavailable" : "Upload training file"}
-          </Button>
-          <Link href={`/jobs/new?datasetId=${dataset.id}`}>
-            <Button className="w-full" variant="ghost">
-              Train from this dataset
-            </Button>
-          </Link>
-        </div>
-
-        {actionMessage ? <p className="text-sm text-black/70">{actionMessage}</p> : null}
-        {runtime?.supportsFineTuning === false ? (
-          <p className="text-sm text-black/60">
-            {runtime.modelProviderLabel} mode is active, so remote fine-tuning steps stay disabled until you switch back
-            to OpenAI.
+        ) : (
+          <p className="rounded-2xl bg-danger/10 p-4 text-sm text-danger">
+            Fix the errors below before this dataset can be used for training.
           </p>
-        ) : null}
-        {dataset.openaiFileId ? <p className="text-sm text-brand">Training file id: {dataset.openaiFileId}</p> : null}
+        )}
+
+        {dataset.openaiFileId && (
+          <p className="text-xs text-black/45">OpenAI file: {dataset.openaiFileId}</p>
+        )}
+        {uploadMessage && (
+          <p className="text-sm text-black/65">{uploadMessage}</p>
+        )}
+        {runtime?.managedFineTuningAvailable === false && (
+          <p className="text-xs text-black/45">
+            Add an <code>OPENAI_API_KEY</code> for managed fine-tuning, or set <code>HF_TOKEN</code> for Hugging Face
+            Jobs. Local GPU QLoRA profiles can use your own machine, and Ollama profiles can still be used in
+            Playground and Agent right now.
+          </p>
+        )}
       </Card>
 
       <ValidationSummaryCard summary={dataset.validationSummary} />

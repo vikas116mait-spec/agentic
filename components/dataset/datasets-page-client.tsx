@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ArrowRight, Database } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
@@ -11,7 +11,7 @@ import { LoadingState } from "@/components/ui/loading-state";
 import { pythonApiFetch } from "@/lib/python-api";
 import { formatDate, formatNumber } from "@/lib/utils";
 
-type DatasetListItem = {
+export type DatasetListItem = {
   id: string;
   name: string;
   validationStatus: string;
@@ -19,30 +19,38 @@ type DatasetListItem = {
   createdAt: string;
 };
 
-export function DatasetsPageClient() {
-  const [datasets, setDatasets] = useState<DatasetListItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function DatasetsPageClient({
+  initialDatasets = null,
+  initialError = null,
+}: {
+  initialDatasets?: DatasetListItem[] | null;
+  initialError?: string | null;
+}) {
+  const [datasets, setDatasets] = useState<DatasetListItem[] | null>(initialDatasets);
+  const [error, setError] = useState<string | null>(initialError);
 
   useEffect(() => {
     pythonApiFetch<DatasetListItem[]>("/datasets")
-      .then(setDatasets)
-      .catch((requestError: Error) => setError(requestError.message));
-  }, []);
+      .then((payload) => {
+        setDatasets(payload);
+        setError(null);
+      })
+      .catch((requestError: Error) => {
+        if (!initialDatasets) {
+          setError(requestError.message);
+        }
+      });
+  }, [initialDatasets]);
 
-  if (error) {
-    return <ErrorAlert title="Python API unavailable" description={error} />;
-  }
-
-  if (!datasets) {
-    return <LoadingState label="Loading datasets..." />;
-  }
+  if (error) return <ErrorAlert title="Could not load datasets" description={error} />;
+  if (!datasets) return <LoadingState variant="list" />;
 
   if (datasets.length === 0) {
     return (
-      <EmptyState
-        title="No datasets yet"
-        description="Upload your first JSONL dataset to start validating records."
-        action={
+        <EmptyState
+          title="No datasets yet"
+          description="Upload a .jsonl file to get started. Each line can use either a messages array or instruction/input/output fields."
+          action={
           <Link href="/datasets/new">
             <Button>Upload dataset</Button>
           </Link>
@@ -52,47 +60,40 @@ export function DatasetsPageClient() {
   }
 
   return (
-    <Card>
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <p className="font-display text-3xl">Datasets</p>
-          <p className="mt-2 text-sm text-black/60">Every dataset is validated first, then optionally prepared for managed training later.</p>
-        </div>
+        <p className="font-display text-2xl">Datasets</p>
         <Link href="/datasets/new">
-          <Button>New dataset</Button>
+          <Button size="sm">Upload new</Button>
         </Link>
       </div>
 
-      <div className="mt-6 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-left text-sm">
-          <thead className="text-black/45">
-            <tr>
-              <th className="pb-3">Name</th>
-              <th className="pb-3">Status</th>
-              <th className="pb-3">Records</th>
-              <th className="pb-3">Created</th>
-              <th className="pb-3">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-black/5">
-            {datasets.map((dataset) => (
-              <tr key={dataset.id}>
-                <td className="py-4 font-semibold">{dataset.name}</td>
-                <td className="py-4">
-                  <StatusBadge value={dataset.validationStatus} />
-                </td>
-                <td className="py-4">{formatNumber(dataset.recordCount)}</td>
-                <td className="py-4">{formatDate(dataset.createdAt)}</td>
-                <td className="py-4">
-                  <Link href={`/datasets/${dataset.id}`} className="font-semibold text-brand">
-                    View
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
+      {datasets.map((dataset) => (
+        <Link key={dataset.id} href={`/datasets/${dataset.id}`} className="group block">
+          <div className="flex items-center gap-4 rounded-[1.5rem] border border-black/8 bg-white/80 px-5 py-4 shadow-sm transition-all hover:border-black/14 hover:shadow-md">
+            {/* record count bar */}
+            <div className="hidden sm:flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-brand/8 text-brand">
+              <Database className="h-4 w-4" />
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-semibold">{dataset.name}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                <span className="text-xs font-medium text-black/55">
+                  {formatNumber(dataset.recordCount)} records
+                </span>
+                <span className="text-xs text-black/25">·</span>
+                <span className="text-xs text-black/40">{formatDate(dataset.createdAt)}</span>
+              </div>
+            </div>
+
+            <div className="ml-2 flex shrink-0 items-center gap-3">
+              <StatusBadge value={dataset.validationStatus} />
+              <ArrowRight className="h-4 w-4 text-black/20 transition group-hover:translate-x-0.5 group-hover:text-black/40" />
+            </div>
+          </div>
+        </Link>
+      ))}
+    </div>
   );
 }

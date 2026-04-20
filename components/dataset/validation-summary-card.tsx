@@ -1,6 +1,86 @@
 import type { DatasetValidationSummary } from "@/lib/types";
 import { Card } from "@/components/ui/card";
 import { JsonPreview } from "@/components/ui/json-preview";
+import { cn } from "@/lib/utils";
+
+const taskColors: Record<string, string> = {
+  coding:         "bg-brand/12 text-brand",
+  qa:             "bg-sky-100 text-sky-700",
+  translation:    "bg-purple-100 text-purple-700",
+  summarization:  "bg-orange-100 text-orange-700",
+  math:           "bg-yellow-100 text-yellow-800",
+  explanation:    "bg-teal-100 text-teal-700",
+  writing:        "bg-pink-100 text-pink-700",
+  reasoning:      "bg-indigo-100 text-indigo-700",
+  classification: "bg-red-100 text-red-700",
+  extraction:     "bg-lime-100 text-lime-700",
+  default:        "bg-black/8 text-black/60",
+};
+
+type ChatMessage = { role: string; content: string };
+
+function ExamplePreview({ preview }: { preview: unknown }) {
+  if (!preview || typeof preview !== "object") return <JsonPreview value={preview} />;
+  const p = preview as Record<string, unknown>;
+
+  if (Array.isArray(p.messages)) {
+    return (
+      <div className="space-y-2 rounded-3xl bg-ink p-4">
+        {(p.messages as ChatMessage[]).map((msg, i) => (
+          <div key={i} className="text-xs">
+            <span className={cn(
+              "mr-2 font-semibold uppercase tracking-wide",
+              msg.role === "assistant" ? "text-brand" : "text-white/50"
+            )}>
+              {msg.role}
+            </span>
+            <span className="text-white/80 whitespace-pre-wrap break-words">
+              {typeof msg.content === "string" ? msg.content.slice(0, 220) : JSON.stringify(msg.content)}
+              {typeof msg.content === "string" && msg.content.length > 220 ? "…" : ""}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (typeof p.instruction === "string" || typeof p.output === "string") {
+    return (
+      <div className="rounded-3xl bg-ink p-4 space-y-2 text-xs text-white/80">
+        {p.instruction && (
+          <p>
+            <span className="text-white/50 font-semibold uppercase tracking-wide mr-2">Instruction</span>
+            {String(p.instruction).slice(0, 220)}{String(p.instruction).length > 220 ? "…" : ""}
+          </p>
+        )}
+        {p.input && (
+          <p>
+            <span className="text-white/50 font-semibold uppercase tracking-wide mr-2">Input</span>
+            {String(p.input).slice(0, 220)}{String(p.input).length > 220 ? "…" : ""}
+          </p>
+        )}
+        {p.output && (
+          <p>
+            <span className="text-brand font-semibold uppercase tracking-wide mr-2">Output</span>
+            {String(p.output).slice(0, 220)}{String(p.output).length > 220 ? "…" : ""}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return <JsonPreview value={preview} />;
+}
+
+function TaskTag({ task }: { task: string }) {
+  const key = task.toLowerCase().replace(/\s+/g, "_");
+  const cls = taskColors[key] ?? taskColors.default;
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${cls}`}>
+      {task}
+    </span>
+  );
+}
 
 export function ValidationSummaryCard({ summary }: { summary: DatasetValidationSummary }) {
   return (
@@ -31,12 +111,20 @@ export function ValidationSummaryCard({ summary }: { summary: DatasetValidationS
         <p className="font-semibold">Examples</p>
         <div className="mt-3 space-y-3">
           {summary.examples.length === 0 ? <p className="text-sm text-black/55">No valid examples parsed yet.</p> : null}
-          {summary.examples.map((example) => (
-            <div key={example.line}>
-              <p className="mb-2 text-xs uppercase tracking-[0.2em] text-black/45">Line {example.line}</p>
-              <JsonPreview value={example.preview} />
-            </div>
-          ))}
+          {summary.examples.map((example) => {
+            const task = typeof example.preview === "object" && example.preview !== null
+              ? (example.preview as Record<string, unknown>).task as string | undefined
+              : undefined;
+            return (
+              <div key={example.line}>
+                <div className="mb-2 flex items-center gap-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-black/45">Line {example.line}</p>
+                  {task && <TaskTag task={task} />}
+                </div>
+                <ExamplePreview preview={example.preview} />
+              </div>
+            );
+          })}
         </div>
       </div>
 

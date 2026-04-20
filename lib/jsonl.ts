@@ -13,9 +13,76 @@ const messageSchema = z.object({
   content: z.any()
 });
 
-const trainingRecordSchema = z.object({
+const chatTrainingRecordSchema = z.object({
   messages: z.array(messageSchema).min(1, "messages must not be empty")
 });
+
+const instructionTrainingRecordSchema = z.object({
+  instruction: z.string().trim().min(1, "instruction must not be empty"),
+  input: z.string().optional().default(""),
+  output: z.string().trim().min(1, "output must not be empty")
+});
+
+function validateRecord(record: unknown) {
+  const chatParsed = chatTrainingRecordSchema.safeParse(record);
+  if (chatParsed.success) {
+    const assistantMessages = chatParsed.data.messages.filter((message) => message.role === "assistant");
+    if (assistantMessages.length === 0) {
+      return {
+        errors: ["At least one assistant message is required."],
+        warnings: [],
+        preview: null
+      };
+    }
+
+    const hasEmptyAssistant = assistantMessages.some((message) => {
+      if (typeof message.content === "string") {
+        return message.content.trim().length === 0;
+      }
+
+      if (Array.isArray(message.content)) {
+        return message.content.length === 0;
+      }
+
+      return !message.content;
+    });
+
+    if (hasEmptyAssistant) {
+      return {
+        errors: ["Assistant content should not be empty."],
+        warnings: [],
+        preview: null
+      };
+    }
+
+    const warnings = chatParsed.data.messages.some((message) => {
+      return !["system", "user", "assistant", "developer", "tool"].includes(message.role);
+    })
+      ? ["Record contains a non-standard role value."]
+      : [];
+
+    return {
+      errors: [],
+      warnings,
+      preview: chatParsed.data
+    };
+  }
+
+  const instructionParsed = instructionTrainingRecordSchema.safeParse(record);
+  if (instructionParsed.success) {
+    return {
+      errors: [],
+      warnings: [],
+      preview: instructionParsed.data
+    };
+  }
+
+  return {
+    errors: ["Each line must contain either a `messages` array or `instruction`/`output` fields."],
+    warnings: [],
+    preview: null
+  };
+}
 
 export async function validateJsonlFile(filePath: string): Promise<DatasetValidationSummary> {
   if (path.extname(filePath).toLowerCase() !== ".jsonl") {
@@ -42,64 +109,31 @@ export async function validateJsonlFile(filePath: string): Promise<DatasetValida
 
     try {
       const record = JSON.parse(line) as unknown;
-      const parsed = trainingRecordSchema.safeParse(record);
+      const validation = validateRecord(record);
 
-      if (!parsed.success) {
-        parsed.error.issues.forEach((issue) => {
+      if (validation.errors.length > 0) {
+        validation.errors.forEach((message) => {
           errors.push({
             line: lineNumber,
-            message: issue.message
+            message
           });
         });
         return;
       }
 
-      const assistantMessages = parsed.data.messages.filter((message) => message.role === "assistant");
-      if (assistantMessages.length === 0) {
-        errors.push({
-          line: lineNumber,
-          message: "At least one assistant message is required."
-        });
-        return;
-      }
-
-      const hasEmptyAssistant = assistantMessages.some((message) => {
-        if (typeof message.content === "string") {
-          return message.content.trim().length === 0;
-        }
-
-        if (Array.isArray(message.content)) {
-          return message.content.length === 0;
-        }
-
-        return !message.content;
-      });
-
-      if (hasEmptyAssistant) {
-        errors.push({
-          line: lineNumber,
-          message: "Assistant content should not be empty."
-        });
-        return;
-      }
-
-      const hasNonStandardRole = parsed.data.messages.some((message) => {
-        return !["system", "user", "assistant", "developer", "tool"].includes(message.role);
-      });
-
-      if (hasNonStandardRole) {
+      validation.warnings.forEach((message) => {
         warnings.push({
           line: lineNumber,
-          message: "Record contains a non-standard role value."
+          message
         });
-      }
+      });
 
       validRecords += 1;
 
-      if (examples.length < 3) {
+      if (examples.length < 3 && validation.preview) {
         examples.push({
           line: lineNumber,
-          preview: parsed.data
+          preview: validation.preview
         });
       }
     } catch {
