@@ -7,8 +7,11 @@ uploads_python
 .env
 .env.local
 .venv
+.venv-train
+.codex
 __pycache__/
 *.pyc
+*.tsbuildinfo
 python_api/data/state.json
 python_api/data/temporal/
 python_api/data/temporal-dev.db*
