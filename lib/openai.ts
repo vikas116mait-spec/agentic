@@ -1,16 +1,18 @@
 import fs from "node:fs";
 import OpenAI from "openai";
 
-type ModelProvider = "ollama" | "openai" | "huggingface" | "local";
+type ModelProvider = "ollama" | "openai" | "huggingface" | "local" | "groq" | "gemini" | "cerebras" | "together";
+
+const VALID_PROVIDERS = new Set<string>(["ollama", "openai", "huggingface", "local", "groq", "gemini", "cerebras", "together"]);
 
 function getModelProvider(): ModelProvider {
   const configured = process.env.LLM_PROVIDER?.trim().toLowerCase();
-  if (configured && configured !== "ollama" && configured !== "openai" && configured !== "huggingface" && configured !== "local") {
-    throw new Error(`Unsupported LLM_PROVIDER \`${configured}\`. Use \`ollama\`, \`openai\`, \`huggingface\`, or \`local\`.`);
+  if (configured && !VALID_PROVIDERS.has(configured)) {
+    throw new Error(`Unsupported LLM_PROVIDER \`${configured}\`. Supported: ollama, openai, huggingface, local, groq, gemini, cerebras, together.`);
   }
 
-  if (configured === "ollama" || configured === "openai" || configured === "huggingface" || configured === "local") {
-    return configured;
+  if (configured && VALID_PROVIDERS.has(configured)) {
+    return configured as ModelProvider;
   }
 
   return process.env.OPENAI_API_KEY ? "openai" : "ollama";
@@ -32,7 +34,8 @@ function ensureFineTuningAvailable() {
 }
 
 function getClient() {
-  if (getModelProvider() === "huggingface" || getModelProvider() === "local") {
+  const provider = getModelProvider();
+  if (provider === "huggingface" || provider === "local") {
     throw new Error("This provider is a training backend in this app, not a direct inference client.");
   }
 

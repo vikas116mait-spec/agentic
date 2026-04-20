@@ -11,7 +11,7 @@ import { LoadingState } from "@/components/ui/loading-state";
 import { pythonApiFetch } from "@/lib/python-api";
 import { formatDate, formatNumber } from "@/lib/utils";
 
-type DatasetListItem = {
+export type DatasetListItem = {
   id: string;
   name: string;
   validationStatus: string;
@@ -19,18 +19,31 @@ type DatasetListItem = {
   createdAt: string;
 };
 
-export function DatasetsPageClient() {
-  const [datasets, setDatasets] = useState<DatasetListItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function DatasetsPageClient({
+  initialDatasets = null,
+  initialError = null,
+}: {
+  initialDatasets?: DatasetListItem[] | null;
+  initialError?: string | null;
+}) {
+  const [datasets, setDatasets] = useState<DatasetListItem[] | null>(initialDatasets);
+  const [error, setError] = useState<string | null>(initialError);
 
   useEffect(() => {
     pythonApiFetch<DatasetListItem[]>("/datasets")
-      .then(setDatasets)
-      .catch((requestError: Error) => setError(requestError.message));
-  }, []);
+      .then((payload) => {
+        setDatasets(payload);
+        setError(null);
+      })
+      .catch((requestError: Error) => {
+        if (!initialDatasets) {
+          setError(requestError.message);
+        }
+      });
+  }, [initialDatasets]);
 
   if (error) return <ErrorAlert title="Could not load datasets" description={error} />;
-  if (!datasets) return <LoadingState label="Loading datasets..." />;
+  if (!datasets) return <LoadingState variant="list" />;
 
   if (datasets.length === 0) {
     return (

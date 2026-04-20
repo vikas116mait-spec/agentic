@@ -9,7 +9,10 @@ const configuredAllowedDevOrigins = (process.env.NEXT_ALLOWED_DEV_ORIGINS ?? "")
 const nextConfig: NextConfig = {
   typedRoutes: true,
   output: "standalone",
-  allowedDevOrigins: Array.from(new Set([...defaultAllowedDevOrigins, ...configuredAllowedDevOrigins]))
+  allowedDevOrigins: Array.from(new Set([...defaultAllowedDevOrigins, ...configuredAllowedDevOrigins])),
+  env: {
+    NEXT_PUBLIC_PYTHON_API_URL: process.env.NEXT_PUBLIC_PYTHON_API_URL ?? process.env.PYTHON_API_URL ?? "http://127.0.0.1:8001"
+  }
 };
 
 export default nextConfig;

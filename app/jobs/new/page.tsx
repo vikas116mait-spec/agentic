@@ -48,10 +48,9 @@ export default async function NewJobPage({
             <div className="mt-6 flex flex-wrap gap-2">
               {[
                 "Qwen 0.5B / 1.5B / 3B / 7B",
-                "Gemma 2 2B",
                 "Phi 3.5 Mini",
                 "Mistral 7B",
-                "Llama 3.2 3B"
+                "Qwen 3 8B"
               ].map((label) => (
                 <span key={label} className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-xs text-black/70">
                   {label}

@@ -73,10 +73,13 @@ class CreateJobRequest(BaseModel):
     baseModel: str = DEFAULT_BASE_MODEL
     modelProvider: str | None = None
     hyperparameters: dict[str, Any] | None = None
-    exportGguf: bool = False
+    exportGguf: bool = True
     ggufQuantization: str = "q4_k_m"
     pushToOllama: bool = False
     ollamaModelName: str = ""
+    numEpochs: int | None = None
+    learningRate: float | None = None
+    perDeviceBatchSize: int | None = None
 
 
 class PlaygroundRunRequest(BaseModel):
@@ -254,6 +257,9 @@ def create_job(request: CreateJobRequest):
             gguf_quantization=request.ggufQuantization,
             push_to_ollama=request.pushToOllama,
             ollama_model_name=request.ollamaModelName,
+            num_epochs=request.numEpochs,
+            learning_rate=request.learningRate,
+            per_device_batch_size=request.perDeviceBatchSize,
         )
     except Exception as error:
         return handle_api_error(error)
@@ -292,9 +298,9 @@ def cancel_job(job_id: str):
 
 
 @app.get("/jobs/{job_id}/download")
-def download_job(job_id: str):
+def download_job(job_id: str, type: str = "adapter"):
     try:
-        package = build_job_download_package(job_id)
+        package = build_job_download_package(job_id, artifact_type=type)
         return FileResponse(package["path"], media_type=package["mediaType"], filename=package["filename"])
     except Exception as error:
         return handle_api_error(error)

@@ -8,6 +8,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { LoadingState } from "@/components/ui/loading-state";
 import { getPythonApiBaseUrl, pythonApiFetch } from "@/lib/python-api";
 import { formatDate, formatDuration, formatNumber } from "@/lib/utils";
@@ -245,7 +246,7 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
   }
 
   if (!job) {
-    return <LoadingState label="Loading job..." />;
+    return <LoadingState variant="detail" />;
   }
 
   const progress = job.progressJson?.progress;
@@ -265,6 +266,7 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
 
   return (
     <div className="space-y-6">
+      <Breadcrumb crumbs={[{ label: "Training runs", href: "/jobs" }, { label: job.dataset?.name ?? job.id }]} />
       <Card className="space-y-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>

@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { LoadingState } from "@/components/ui/loading-state";
 import { pythonApiFetch } from "@/lib/python-api";
 import { formatBytes, formatDate } from "@/lib/utils";
@@ -63,13 +64,14 @@ export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
   }
 
   if (error) return <ErrorAlert title="Could not load dataset" description={error} />;
-  if (!dataset) return <LoadingState label="Loading dataset..." />;
+  if (!dataset) return <LoadingState variant="detail" />;
 
   const isValid = dataset.validationStatus === "VALID";
   const canUploadToOpenAI = isValid && runtime?.managedFineTuningAvailable !== false && !dataset.openaiFileId;
 
   return (
     <div className="space-y-6">
+      <Breadcrumb crumbs={[{ label: "Datasets", href: "/datasets" }, { label: dataset.name }]} />
       <Card className="space-y-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>

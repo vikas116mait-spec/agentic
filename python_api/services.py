@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -49,14 +51,26 @@ except ImportError:  # pragma: no cover
 ensure_env_loaded()
 
 
-SUPPORTED_MODEL_PROVIDERS = {"ollama", "openai", "huggingface", "local"}
+SUPPORTED_MODEL_PROVIDERS = {"ollama", "openai", "huggingface", "local", "groq", "gemini", "cerebras", "together"}
 PROVIDER_LABELS = {
     "ollama": "Ollama",
     "openai": "OpenAI",
     "huggingface": "Hugging Face Jobs",
     "local": "Local GPU QLoRA",
+    "groq": "Groq",
+    "gemini": "Google Gemini",
+    "cerebras": "Cerebras",
+    "together": "Together AI",
 }
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
+TOGETHER_BASE_URL = "https://api.together.xyz/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_OLLAMA_SMALL_MODEL = "qwen3:4b"
+DEFAULT_OLLAMA_MEDIUM_MODEL = "qwen3:8b"
+DEFAULT_OLLAMA_LARGE_MODEL = "llama3.1:8b"
+DEFAULT_OLLAMA_THINKING_MODEL = "deepseek-r1:8b"
 DEFAULT_OPENAI_BASE_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_HUGGINGFACE_BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 DEFAULT_LOCAL_BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
@@ -85,6 +99,12 @@ SEEDED_GATED_PROFILE_MODELS = {
     "profile-local-llama-32-3b": "meta-llama/Llama-3.2-3B-Instruct",
     "profile-hf-gemma-2b": "google/gemma-2-2b-it",
 }
+SEEDED_DEFAULT_PROFILE_IDS = {"profile-open-source-sft", "profile-local-qlora"}
+LEGACY_PAID_SEEDED_PROFILES = {
+    "profile-large": ("openai", DEFAULT_OPENAI_BASE_MODEL),
+    "profile-thinking": ("openai", "gpt-5.4-mini"),
+}
+_READY_OLLAMA_MODELS: set[str] = set()
 
 
 def _slugify_archive_name(value: str) -> str:
@@ -127,6 +147,51 @@ def _is_seeded_gated_profile(profile: dict[str, Any]) -> bool:
     return bool(expected_model and profile.get("model") == expected_model)
 
 
+def _preferred_accessible_model(model: str) -> str:
+    alternatives = GATED_MODEL_REPLACEMENTS.get(model)
+    return alternatives[0] if alternatives else model
+
+
+def _is_legacy_paid_seeded_profile(profile: dict[str, Any]) -> bool:
+    legacy = LEGACY_PAID_SEEDED_PROFILES.get(profile.get("id"))
+    return bool(legacy and profile.get("provider") == legacy[0] and profile.get("model") == legacy[1])
+
+
+def _sanitize_seeded_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    if profile.get("id") not in SEEDED_DEFAULT_PROFILE_IDS:
+        return profile
+
+    safe_model = _preferred_accessible_model(profile.get("model", ""))
+    if safe_model and safe_model != profile.get("model"):
+        profile["model"] = safe_model
+        profile["updatedAt"] = utc_now_iso()
+    return profile
+
+
+def _profile_uses_gated_fine_tuning_model(profile: dict[str, Any]) -> bool:
+    provider = profile.get("provider")
+    model = profile.get("model")
+    return provider in {"huggingface", "local"} and model in GATED_MODEL_REPLACEMENTS
+
+
+def _ensure_accessible_profile_model(model: str, provider: str) -> None:
+    if provider not in {"huggingface", "local"}:
+        return
+
+    alternatives = GATED_MODEL_REPLACEMENTS.get(model)
+    if not alternatives:
+        return
+
+    raise ApiError(
+        "MODEL_ACCESS_RESTRICTED",
+        (
+            f"`{model}` requires separate Hugging Face approval and cannot be saved as a supported fine-tuning profile here. "
+            f"Use one of: {', '.join(alternatives)}."
+        ),
+        400,
+    )
+
+
 def _ensure_accessible_fine_tuning_model(base_model: str, model_provider: str) -> None:
     if model_provider not in {"huggingface", "local"}:
         return
@@ -151,7 +216,7 @@ def get_model_provider(provider: str | None = None) -> str:
         if normalized not in SUPPORTED_MODEL_PROVIDERS:
             raise ApiError(
                 "MODEL_PROVIDER_INVALID",
-                f"Unsupported provider `{provider}`. Use `ollama`, `openai`, `huggingface`, or `local`.",
+                f"Unsupported provider `{provider}`. Supported: ollama, openai, huggingface, local, groq, gemini, cerebras, together.",
                 400,
             )
         return normalized
@@ -162,7 +227,7 @@ def get_model_provider(provider: str | None = None) -> str:
     if configured:
         raise ApiError(
             "MODEL_PROVIDER_INVALID",
-            f"Unsupported LLM_PROVIDER `{configured}`. Use `ollama`, `openai`, `huggingface`, or `local`.",
+            f"Unsupported LLM_PROVIDER `{configured}`. Supported: ollama, openai, huggingface, local, groq, gemini, cerebras, together.",
             500,
         )
     return "openai" if os.environ.get("OPENAI_API_KEY") else "ollama"
@@ -174,7 +239,7 @@ def get_provider_display_name(provider: str | None = None) -> str:
 
 
 def provider_supports_inference(provider: str | None = None) -> bool:
-    return get_model_provider(provider) in {"ollama", "openai"}
+    return get_model_provider(provider) in {"ollama", "openai", "groq", "gemini", "cerebras", "together"}
 
 
 def provider_supports_fine_tuning(provider: str | None = None) -> bool:
@@ -188,6 +253,54 @@ def _normalize_ollama_base_url(raw: str | None) -> str:
     return f"{normalized}/v1/"
 
 
+def _ollama_cli_env() -> dict[str, str]:
+    env = os.environ.copy()
+    parsed = urlparse(_normalize_ollama_base_url(os.environ.get("OLLAMA_BASE_URL")))
+    if parsed.scheme and parsed.netloc:
+        env["OLLAMA_HOST"] = f"{parsed.scheme}://{parsed.netloc}"
+    return env
+
+
+def _run_ollama_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["ollama", *args],
+            cwd=str(ROOT),
+            env=_ollama_cli_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise ApiError(
+            "MODEL_PROVIDER_NOT_CONFIGURED",
+            "The `ollama` CLI is not installed or not on PATH, so local models cannot be prepared automatically.",
+            503,
+        ) from error
+
+
+def ensure_ollama_model_available(model: str) -> None:
+    normalized_model = (model or "").strip()
+    if not normalized_model or normalized_model in _READY_OLLAMA_MODELS:
+        return
+
+    show_result = _run_ollama_cli("show", normalized_model)
+    if show_result.returncode == 0:
+        _READY_OLLAMA_MODELS.add(normalized_model)
+        return
+
+    pull_result = _run_ollama_cli("pull", normalized_model)
+    if pull_result.returncode != 0:
+        message = pull_result.stderr.strip() or pull_result.stdout.strip() or show_result.stderr.strip() or show_result.stdout.strip()
+        raise ApiError(
+            "MODEL_PROVIDER_NOT_CONFIGURED",
+            f"Could not pull Ollama model `{normalized_model}` automatically. {message}".strip(),
+            503,
+        )
+
+    _READY_OLLAMA_MODELS.add(normalized_model)
+
+
 def get_provider_base_url(provider: str | None = None) -> str | None:
     resolved = get_model_provider(provider)
     if resolved == "ollama":
@@ -196,6 +309,14 @@ def get_provider_base_url(provider: str | None = None) -> str | None:
         return "https://huggingface.co"
     if resolved == "local":
         return None
+    if resolved == "groq":
+        return GROQ_BASE_URL
+    if resolved == "gemini":
+        return GEMINI_BASE_URL
+    if resolved == "cerebras":
+        return CEREBRAS_BASE_URL
+    if resolved == "together":
+        return TOGETHER_BASE_URL
     return os.environ.get("OPENAI_BASE_URL")
 
 
@@ -207,6 +328,14 @@ def provider_is_configured(provider: str | None = None) -> bool:
         return huggingface_provider_is_configured()
     if resolved == "local":
         return local_training_provider_is_configured()
+    if resolved == "groq":
+        return bool(os.environ.get("GROQ_API_KEY"))
+    if resolved == "gemini":
+        return bool(os.environ.get("GOOGLE_API_KEY"))
+    if resolved == "cerebras":
+        return bool(os.environ.get("CEREBRAS_API_KEY"))
+    if resolved == "together":
+        return bool(os.environ.get("TOGETHER_API_KEY"))
     return True
 
 
@@ -232,7 +361,10 @@ def provider_status_payload(provider: str | None = None) -> dict[str, Any]:
         "supportsInference": provider_supports_inference(resolved),
         "supportsFineTuning": provider_supports_fine_tuning(resolved),
         "managedFineTuningAvailable": provider_is_configured("openai"),
-        "providers": [provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"), provider_payload("local")],
+        "providers": [
+            provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"), provider_payload("local"),
+            provider_payload("groq"), provider_payload("gemini"), provider_payload("cerebras"), provider_payload("together"),
+        ],
         "defaultBaseModel": DEFAULT_BASE_MODEL,
         "defaultAgentModel": DEFAULT_AGENT_MODEL,
     }
@@ -246,7 +378,8 @@ def ensure_fine_tuning_available(provider: str | None = None) -> None:
         "FINE_TUNING_UNSUPPORTED",
         (
             f"Fine-tuning is not available for {get_provider_display_name(resolved)} profiles yet. "
-            "Use OpenAI for managed fine-tuning, Hugging Face Jobs for cloud SFT training, or Local GPU QLoRA to use your own hardware."
+            "Use OpenAI for managed fine-tuning, Hugging Face Jobs for cloud SFT training, or Local GPU QLoRA to use your own hardware. "
+            "Groq, Gemini, Cerebras, and Together AI are inference-only."
         ),
         400,
     )
@@ -261,6 +394,18 @@ elif get_model_provider() == "huggingface":
 elif get_model_provider() == "local":
     DEFAULT_BASE_MODEL = os.environ.get("DEFAULT_BASE_MODEL") or os.environ.get("LOCAL_TRAINING_BASE_MODEL") or DEFAULT_LOCAL_BASE_MODEL
     DEFAULT_AGENT_MODEL = os.environ.get("AGENT_MODEL") or os.environ.get("OLLAMA_AGENT_MODEL") or "qwen3:8b"
+elif get_model_provider() == "groq":
+    DEFAULT_BASE_MODEL = os.environ.get("DEFAULT_BASE_MODEL") or "llama-3.3-70b-versatile"
+    DEFAULT_AGENT_MODEL = os.environ.get("AGENT_MODEL") or DEFAULT_BASE_MODEL
+elif get_model_provider() == "gemini":
+    DEFAULT_BASE_MODEL = os.environ.get("DEFAULT_BASE_MODEL") or "gemini-2.0-flash"
+    DEFAULT_AGENT_MODEL = os.environ.get("AGENT_MODEL") or DEFAULT_BASE_MODEL
+elif get_model_provider() == "cerebras":
+    DEFAULT_BASE_MODEL = os.environ.get("DEFAULT_BASE_MODEL") or "llama-4-scout-17b-16e-instruct"
+    DEFAULT_AGENT_MODEL = os.environ.get("AGENT_MODEL") or DEFAULT_BASE_MODEL
+elif get_model_provider() == "together":
+    DEFAULT_BASE_MODEL = os.environ.get("DEFAULT_BASE_MODEL") or "meta-llama/Meta-Llama-3.1-70B-Instruct"
+    DEFAULT_AGENT_MODEL = os.environ.get("AGENT_MODEL") or DEFAULT_BASE_MODEL
 else:
     DEFAULT_BASE_MODEL = os.environ.get("DEFAULT_BASE_MODEL") or DEFAULT_OPENAI_BASE_MODEL
     DEFAULT_AGENT_MODEL = os.environ.get("AGENT_MODEL") or os.environ.get("OPENAI_AGENT_MODEL") or "gpt-5.4-mini"
@@ -268,12 +413,12 @@ else:
 
 def _default_model_profiles() -> list[dict[str, Any]]:
     now = utc_now_iso()
-    openai_base_model = os.environ.get("OPENAI_BASE_MODEL") or DEFAULT_OPENAI_BASE_MODEL
-    openai_agent_model = os.environ.get("OPENAI_AGENT_MODEL") or "gpt-5.4-mini"
-    huggingface_base_model = os.environ.get("HF_BASE_MODEL") or DEFAULT_HUGGINGFACE_BASE_MODEL
-    local_base_model = os.environ.get("LOCAL_TRAINING_BASE_MODEL") or DEFAULT_LOCAL_BASE_MODEL
-    ollama_medium_model = os.environ.get("OLLAMA_BASE_MODEL") or "qwen3:8b"
-    ollama_small_model = os.environ.get("OLLAMA_SMALL_MODEL") or "qwen3:4b"
+    huggingface_base_model = _preferred_accessible_model(os.environ.get("HF_BASE_MODEL") or DEFAULT_HUGGINGFACE_BASE_MODEL)
+    local_base_model = _preferred_accessible_model(os.environ.get("LOCAL_TRAINING_BASE_MODEL") or DEFAULT_LOCAL_BASE_MODEL)
+    ollama_small_model = os.environ.get("OLLAMA_SMALL_MODEL") or DEFAULT_OLLAMA_SMALL_MODEL
+    ollama_medium_model = os.environ.get("OLLAMA_BASE_MODEL") or DEFAULT_OLLAMA_MEDIUM_MODEL
+    ollama_large_model = os.environ.get("OLLAMA_LARGE_MODEL") or DEFAULT_OLLAMA_LARGE_MODEL
+    ollama_thinking_model = os.environ.get("OLLAMA_THINKING_MODEL") or DEFAULT_OLLAMA_THINKING_MODEL
 
     profiles = [
         {
@@ -299,20 +444,20 @@ def _default_model_profiles() -> list[dict[str, Any]]:
         {
             "id": "profile-large",
             "name": "Large",
-            "provider": "openai",
-            "model": openai_base_model,
+            "provider": "ollama",
+            "model": ollama_large_model,
             "category": "large",
-            "description": "Higher quality responses and a good base for managed fine-tuning.",
+            "description": "Stronger free local model for side-by-side comparisons.",
             "createdAt": now,
             "updatedAt": now,
         },
         {
             "id": "profile-thinking",
             "name": "Thinking",
-            "provider": "openai",
-            "model": openai_agent_model,
+            "provider": "ollama",
+            "model": ollama_thinking_model,
             "category": "thinking",
-            "description": "Reasoning-heavy profile for harder agent tasks.",
+            "description": "Reasoning-heavy free local model that is auto-pulled on first use.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -406,6 +551,100 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "createdAt": now,
             "updatedAt": now,
         },
+        # Groq — free tier, inference-only
+        {
+            "id": "profile-groq-gemma2-9b",
+            "name": "Gemma 2 9B (Groq)",
+            "provider": "groq",
+            "model": "gemma2-9b-it",
+            "category": "small",
+            "description": "Fast free Groq inference with Google's Gemma 2 9B instruct model.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-groq-mixtral-8x7b",
+            "name": "Mixtral 8x7B (Groq)",
+            "provider": "groq",
+            "model": "mixtral-8x7b-32768",
+            "category": "medium",
+            "description": "Mistral mixture-of-experts model served at ultra-low latency on Groq.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-groq-llama33-70b",
+            "name": "Llama 3.3 70B (Groq)",
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+            "category": "large",
+            "description": "Fastest free 70B inference available — best Groq model for quality.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        # Google Gemini — free tier (15 RPM, 1M tokens/day), inference-only
+        {
+            "id": "profile-gemini-flash-8b",
+            "name": "Gemini 1.5 Flash 8B",
+            "provider": "gemini",
+            "model": "gemini-1.5-flash-8b",
+            "category": "small",
+            "description": "Smallest Gemini model — free tier, fast for quick iteration.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-gemini-flash-2",
+            "name": "Gemini 2.0 Flash",
+            "provider": "gemini",
+            "model": "gemini-2.0-flash",
+            "category": "large",
+            "description": "Latest Gemini model on the free tier — 1M tokens/day.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        # Cerebras — free tier, ultra-fast hardware, inference-only
+        {
+            "id": "profile-cerebras-llama31-70b",
+            "name": "Llama 3.1 70B (Cerebras)",
+            "provider": "cerebras",
+            "model": "llama3.1-70b",
+            "category": "large",
+            "description": "Ultra-fast 70B inference on Cerebras wafer-scale hardware.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-cerebras-llama4-scout",
+            "name": "Llama 4 Scout (Cerebras)",
+            "provider": "cerebras",
+            "model": "llama-4-scout-17b-16e-instruct",
+            "category": "medium",
+            "description": "Meta's Llama 4 Scout served on Cerebras — free and extremely fast.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        # Together AI — $25 free credits, inference-only
+        {
+            "id": "profile-together-qwen25-72b",
+            "name": "Qwen 2.5 72B (Together)",
+            "provider": "together",
+            "model": "Qwen/Qwen2.5-72B-Instruct",
+            "category": "large",
+            "description": "Strong open-source 72B model served via Together AI free credits.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-together-mixtral-8x7b",
+            "name": "Mixtral 8x7B (Together)",
+            "provider": "together",
+            "model": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+            "category": "medium",
+            "description": "Mistral MoE inference via Together AI — $25 free credits included.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
     ]
 
     return [profile for profile in profiles if not _is_seeded_gated_profile(profile)]
@@ -441,8 +680,15 @@ def _default_model_profile_defaults(profiles: list[dict[str, Any]]) -> dict[str,
         "playgroundCompareProfileId": compare_id,
         "agentBaseProfileId": medium_id,
         "agentModelProfileId": thinking_id or medium_id,
-        "jobBaseProfileId": local_id or openai_id or huggingface_id or large_id,
+        "jobBaseProfileId": local_id or huggingface_id or openai_id or large_id,
     }
+
+
+def _default_profile_id_is_compatible(default_key: str, profile: dict[str, Any]) -> bool:
+    provider = profile.get("provider")
+    if default_key == "jobBaseProfileId":
+        return provider_supports_fine_tuning(provider)
+    return provider_supports_inference(provider)
 
 
 def _serialize_model_profile(profile: dict[str, Any]) -> dict[str, Any]:
@@ -462,19 +708,36 @@ def _model_profiles_payload(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "profiles": sort_desc(profiles),
         "defaults": defaults,
-        "providers": [provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"), provider_payload("local")],
+        "providers": [
+            provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"), provider_payload("local"),
+            provider_payload("groq"), provider_payload("gemini"), provider_payload("cerebras"), provider_payload("together"),
+        ],
     }
 
 
 def _ensure_model_profiles_initialized(state: dict[str, Any]) -> None:
     default_profiles = _default_model_profiles()
+    default_profiles_by_id = {profile["id"]: profile for profile in default_profiles}
 
     if not state.get("model_profiles_initialized"):
         state["model_profiles"] = default_profiles
         state["model_profile_defaults"] = _default_model_profile_defaults(state["model_profiles"])
         state["model_profiles_initialized"] = True
     else:
-        state["model_profiles"] = [profile for profile in state["model_profiles"] if not _is_seeded_gated_profile(profile)]
+        sanitized_profiles: list[dict[str, Any]] = []
+        for profile in state["model_profiles"]:
+            if _is_seeded_gated_profile(profile):
+                continue
+            profile = _sanitize_seeded_profile(profile)
+            if _is_legacy_paid_seeded_profile(profile):
+                replacement = deepcopy(default_profiles_by_id.get(profile["id"], profile))
+                replacement["createdAt"] = profile.get("createdAt", replacement["createdAt"])
+                replacement["updatedAt"] = utc_now_iso()
+                profile = replacement
+            if _profile_uses_gated_fine_tuning_model(profile):
+                continue
+            sanitized_profiles.append(profile)
+        state["model_profiles"] = sanitized_profiles
         existing_ids = {profile["id"] for profile in state["model_profiles"]}
         missing_profiles = [deepcopy(profile) for profile in default_profiles if profile["id"] not in existing_ids]
         if missing_profiles:
@@ -484,11 +747,19 @@ def _ensure_model_profiles_initialized(state: dict[str, Any]) -> None:
     fallback_defaults = _default_model_profile_defaults(state["model_profiles"])
     current_defaults = state.get("model_profile_defaults") or {}
 
-    sanitized_defaults = {
-        key: value
-        for key, value in current_defaults.items()
-        if key in MODEL_PROFILE_DEFAULT_KEYS and (value is None or value in valid_ids)
-    }
+    profiles_by_id = {profile["id"]: profile for profile in state["model_profiles"]}
+    sanitized_defaults = {}
+    for key, value in current_defaults.items():
+        if key not in MODEL_PROFILE_DEFAULT_KEYS:
+            continue
+        if value is None:
+            sanitized_defaults[key] = value
+            continue
+        if value not in valid_ids:
+            continue
+        profile = profiles_by_id.get(value)
+        if profile and _default_profile_id_is_compatible(key, profile):
+            sanitized_defaults[key] = value
     state["model_profile_defaults"] = {**fallback_defaults, **sanitized_defaults}
 
 
@@ -516,6 +787,7 @@ def create_model_profile(
         raise ApiError("VALIDATION_ERROR", "Profile name is required.", 400)
     if not model.strip():
         raise ApiError("VALIDATION_ERROR", "Model name is required.", 400)
+    _ensure_accessible_profile_model(model.strip(), resolved_provider)
 
     now = utc_now_iso()
     profile = {
@@ -554,6 +826,7 @@ def update_model_profile(
         raise ApiError("VALIDATION_ERROR", "Profile name is required.", 400)
     if not model.strip():
         raise ApiError("VALIDATION_ERROR", "Model name is required.", 400)
+    _ensure_accessible_profile_model(model.strip(), resolved_provider)
 
     now = utc_now_iso()
 
@@ -710,17 +983,28 @@ def validate_jsonl_file(file_path: Path) -> dict[str, Any]:
     }
 
 
-def get_model_client(provider: str | None = None) -> OpenAI:
+_INFERENCE_PROVIDER_KEYS: dict[str, tuple[str, str]] = {
+    "groq":     ("GROQ_API_KEY",     GROQ_BASE_URL),
+    "gemini":   ("GOOGLE_API_KEY",   GEMINI_BASE_URL),
+    "cerebras": ("CEREBRAS_API_KEY", CEREBRAS_BASE_URL),
+    "together": ("TOGETHER_API_KEY", TOGETHER_BASE_URL),
+}
+
+
+def get_model_client(provider: str | None = None, model: str | None = None) -> OpenAI:
     resolved = get_model_provider(provider)
     if resolved in {"huggingface", "local"}:
         raise ApiError(
             "PLAYGROUND_RUN_FAILED",
-            f"{get_provider_display_name(resolved)} profiles are training-only right now. Use Ollama or OpenAI profiles for inference.",
+            f"{get_provider_display_name(resolved)} profiles are training-only right now. Use Ollama, OpenAI, Groq, Gemini, Cerebras, or Together AI profiles for inference.",
             400,
         )
 
     if OpenAI is None:
         raise ApiError("MODEL_CLIENT_PACKAGE_MISSING", "The OpenAI-compatible Python package is not installed.", 500)
+
+    if resolved == "ollama" and model:
+        ensure_ollama_model_available(model)
 
     if resolved == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -731,6 +1015,13 @@ def get_model_client(provider: str | None = None) -> OpenAI:
         if base_url:
             kwargs["base_url"] = base_url
         return OpenAI(**kwargs)
+
+    if resolved in _INFERENCE_PROVIDER_KEYS:
+        env_var, base_url = _INFERENCE_PROVIDER_KEYS[resolved]
+        api_key = os.environ.get(env_var)
+        if not api_key:
+            raise ApiError("MODEL_PROVIDER_NOT_CONFIGURED", f"{env_var} is not configured.", 503)
+        return OpenAI(api_key=api_key, base_url=base_url)
 
     return OpenAI(
         api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
@@ -778,7 +1069,7 @@ def cancel_fine_tuning_job(openai_job_id: str) -> Any:
 
 
 def run_model(prompt: str, model: str, provider: str | None = None) -> str:
-    response = get_model_client(provider).chat.completions.create(
+    response = get_model_client(provider, model=model).chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -911,13 +1202,23 @@ def _build_local_training_job_config(
     dataset: dict[str, Any],
     base_model: str,
     hyperparameters: dict[str, Any] | None = None,
-    export_gguf: bool = False,
+    export_gguf: bool = True,
     gguf_quantization: str = "q4_k_m",
     push_to_ollama: bool = False,
     ollama_model_name: str = "",
+    num_epochs: int | None = None,
+    learning_rate: float | None = None,
+    per_device_batch_size: int | None = None,
 ) -> LocalQLoraJobConfig:
     working_dir = ROOT / "uploads_python" / "jobs" / job_id
     output_dir = working_dir / "artifacts"
+    merged_hyperparameters: dict[str, Any] = dict(hyperparameters or {})
+    if num_epochs is not None:
+        merged_hyperparameters.setdefault("num_train_epochs", num_epochs)
+    if learning_rate is not None:
+        merged_hyperparameters.setdefault("learning_rate", learning_rate)
+    if per_device_batch_size is not None:
+        merged_hyperparameters.setdefault("per_device_train_batch_size", per_device_batch_size)
     return LocalQLoraJobConfig(
         job_id=job_id,
         dataset_id=dataset["id"],
@@ -932,7 +1233,7 @@ def _build_local_training_job_config(
         events_path=str(working_dir / "local_train_events.jsonl"),
         log_path=str(working_dir / "local_train.log"),
         metrics_path=str(working_dir / "local_train_metrics.json"),
-        hyperparameters=hyperparameters or {},
+        hyperparameters=merged_hyperparameters,
         allow_cpu_fallback=os.environ.get("LOCAL_TRAINING_ALLOW_CPU_FALLBACK", "0").strip().lower()
         in {"1", "true", "yes", "on"},
         seed=int(os.environ.get("LOCAL_TRAINING_SEED", "42")),
@@ -975,10 +1276,13 @@ def create_job_record(
     base_model: str,
     hyperparameters: dict[str, Any] | None = None,
     provider: str | None = None,
-    export_gguf: bool = False,
+    export_gguf: bool = True,
     gguf_quantization: str = "q4_k_m",
     push_to_ollama: bool = False,
     ollama_model_name: str = "",
+    num_epochs: int | None = None,
+    learning_rate: float | None = None,
+    per_device_batch_size: int | None = None,
 ) -> dict[str, Any]:
     model_provider = get_model_provider(provider or "openai")
     ensure_fine_tuning_available(model_provider)
@@ -998,6 +1302,9 @@ def create_job_record(
             gguf_quantization=gguf_quantization,
             push_to_ollama=push_to_ollama,
             ollama_model_name=ollama_model_name,
+            num_epochs=num_epochs,
+            learning_rate=learning_rate,
+            per_device_batch_size=per_device_batch_size,
         )
         try:
             runtime_summary = ensure_local_training_ready(allow_cpu_fallback=config.allow_cpu_fallback)
@@ -1222,7 +1529,14 @@ def retrieve_job_detail(job_id: str) -> dict[str, Any]:
     return _job_detail_payload(state, job)
 
 
-def build_job_download_package(job_id: str) -> dict[str, str]:
+def _find_local_result_file(job: dict[str, Any], result_type: str) -> dict[str, Any] | None:
+    for result in job.get("resultFilesJson") or []:
+        if result.get("type") == result_type:
+            return result
+    return None
+
+
+def build_job_download_package(job_id: str, artifact_type: str = "adapter") -> dict[str, str]:
     job = retrieve_job_detail(job_id)
 
     if job["modelProvider"] != "local":
@@ -1234,6 +1548,24 @@ def build_job_download_package(job_id: str) -> dict[str, str]:
 
     if job["status"] != "succeeded":
         raise ApiError("JOB_SYNC_FAILED", "The local training job must finish successfully before download is available.", 400)
+
+    if artifact_type == "gguf":
+        gguf_result = _find_local_result_file(job, "local_gguf")
+        if not gguf_result:
+            raise ApiError(
+                "NOT_FOUND",
+                "This job does not have a GGUF export. Enable GGUF export before starting the local fine-tuning run.",
+                404,
+            )
+        gguf_path = _resolve_local_job_path(gguf_result.get("path"))
+        return {
+            "path": str(gguf_path),
+            "filename": gguf_path.name,
+            "mediaType": "application/octet-stream",
+        }
+
+    if artifact_type != "adapter":
+        raise ApiError("VALIDATION_ERROR", f"Unsupported download type `{artifact_type}`.", 400)
 
     adapter_path = _resolve_local_job_path(job.get("fineTunedModel") or job.get("localArtifactsPath"))
     metrics_path = Path(job["localMetricsPath"]).resolve() if job.get("localMetricsPath") else None

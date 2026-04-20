@@ -6,12 +6,14 @@ export type PythonApiError = {
   };
 };
 
-export function getPythonApiBaseUrl() {
-  if (typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:8001`;
-  }
+const DEFAULT_PYTHON_API_URL = "http://127.0.0.1:8001";
 
-  return process.env.PYTHON_API_URL ?? "http://127.0.0.1:8001";
+export function getPythonApiBaseUrl() {
+  return (
+    process.env.NEXT_PUBLIC_PYTHON_API_URL ??
+    process.env.PYTHON_API_URL ??
+    DEFAULT_PYTHON_API_URL
+  );
 }
 
 export async function pythonApiFetch<T>(path: string, init?: RequestInit): Promise<T> {

@@ -25,10 +25,16 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
   const [error, setError] = useState<string | null>(null);
 
   // Export options — only relevant for local QLoRA jobs
-  const [exportGguf, setExportGguf] = useState(false);
+  const [exportGguf, setExportGguf] = useState(true);
   const [ggufQuantization, setGgufQuantization] = useState("q4_k_m");
   const [pushToOllama, setPushToOllama] = useState(false);
   const [ollamaModelName, setOllamaModelName] = useState("");
+
+  // Hyperparameters — collapsible, local provider only
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [numEpochs, setNumEpochs] = useState(3);
+  const [learningRate, setLearningRate] = useState(2e-4);
+  const [perDeviceBatchSize, setPerDeviceBatchSize] = useState(2);
 
   useEffect(() => {
     Promise.all([
@@ -87,6 +93,9 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
             ggufQuantization,
             pushToOllama,
             ollamaModelName,
+            numEpochs,
+            learningRate,
+            perDeviceBatchSize,
           }),
         })
       });
@@ -167,8 +176,13 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
       ) : null}
 
       {isLocalProvider ? (
+        <>
         <div className="rounded-[1.5rem] border border-black/8 bg-white/80 p-5 space-y-4">
           <p className="text-sm font-medium text-black/70">Export options</p>
+          <p className="text-sm text-black/55">
+            The base model is downloaded automatically for local fine-tuning. After training, the adapter is saved on
+            disk and a GGUF export is enabled by default so you can download a ready-to-use artifact.
+          </p>
 
           <label className={checkboxLabelClassName}>
             <input
@@ -225,6 +239,63 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
             </div>
           ) : null}
         </div>
+
+        {/* Hyperparameters */}
+        <div className="rounded-[1.5rem] border border-black/8 bg-white/80 p-5 space-y-4">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="flex w-full items-center justify-between text-sm font-medium text-black/70"
+          >
+            <span>Training hyperparameters</span>
+            <span className="text-xs text-black/40">{showAdvanced ? "Hide" : "Customize"}</span>
+          </button>
+
+          {showAdvanced && (
+            <div className="grid gap-4 md:grid-cols-3 pt-2">
+              <label className="space-y-1.5 text-sm">
+                <span className="font-medium text-black/70">Epochs</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={numEpochs}
+                  onChange={(e) => setNumEpochs(Number(e.target.value))}
+                  className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                />
+                <p className="text-xs text-black/40">Default: 3. More epochs = more overfitting risk.</p>
+              </label>
+              <label className="space-y-1.5 text-sm">
+                <span className="font-medium text-black/70">Learning rate</span>
+                <input
+                  type="number"
+                  step={1e-5}
+                  min={1e-6}
+                  max={1e-2}
+                  value={learningRate}
+                  onChange={(e) => setLearningRate(Number(e.target.value))}
+                  className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                />
+                <p className="text-xs text-black/40">Default: 0.0002. Lower = slower, more stable.</p>
+              </label>
+              <label className="space-y-1.5 text-sm">
+                <span className="font-medium text-black/70">Batch size (per device)</span>
+                <select
+                  value={perDeviceBatchSize}
+                  onChange={(e) => setPerDeviceBatchSize(Number(e.target.value))}
+                  className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                >
+                  <option value={1}>1 — lowest VRAM</option>
+                  <option value={2}>2 — default</option>
+                  <option value={4}>4 — faster, needs more VRAM</option>
+                  <option value={8}>8 — large GPU only</option>
+                </select>
+                <p className="text-xs text-black/40">Default: 2. Reduce if you get OOM errors.</p>
+              </label>
+            </div>
+          )}
+        </div>
+        </>
       ) : null}
 
       {error ? <p className="text-sm text-danger">{error}</p> : null}

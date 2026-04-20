@@ -13,7 +13,15 @@ export type DatasetValidationExample = {
   preview: unknown;
 };
 
-export type ModelProvider = "ollama" | "openai" | "huggingface" | "local";
+export type ModelProvider =
+  | "ollama"
+  | "openai"
+  | "huggingface"
+  | "local"
+  | "groq"
+  | "gemini"
+  | "cerebras"
+  | "together";
 
 export type ModelProfileCategory = "small" | "medium" | "large" | "thinking" | "custom";
 
@@ -90,6 +98,7 @@ export type ApiErrorCode =
   | "JOB_SYNC_FAILED"
   | "MODEL_PROVIDER_INVALID"
   | "MODEL_PROVIDER_NOT_CONFIGURED"
+  | "MODEL_ACCESS_RESTRICTED"
   | "PLAYGROUND_RUN_FAILED"
   | "VALIDATION_ERROR"
   | "NOT_FOUND";

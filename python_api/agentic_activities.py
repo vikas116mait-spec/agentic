@@ -248,7 +248,7 @@ def _chat_tool_definitions() -> list[dict[str, Any]]:
 
 
 def _call_agent_model(snapshot: dict[str, Any], input_items: list[dict[str, Any]], previous_response_id: str | None):
-    client = get_model_client(_agent_provider(snapshot))
+    client = get_model_client(_agent_provider(snapshot), model=_model_name(snapshot))
     request: dict[str, Any] = {
         "model": _model_name(snapshot),
         "instructions": AGENT_INSTRUCTIONS,
@@ -530,7 +530,7 @@ def _run_local_agent_turn(snapshot: dict[str, Any]) -> dict[str, Any]:
         {"role": "user", "content": _build_run_context(working_snapshot, continuing=False)},
     ]
 
-    client = get_model_client(_agent_provider(working_snapshot))
+    client = get_model_client(_agent_provider(working_snapshot), model=_model_name(working_snapshot))
     tools = _chat_tool_definitions()
 
     for _ in range(MAX_TOOL_LOOPS):

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Zap } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -10,7 +10,13 @@ import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { LoadingState } from "@/components/ui/loading-state";
 import { pythonApiFetch } from "@/lib/python-api";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
+
+type JobFilter = "all" | "running" | "failed" | "succeeded";
+
+const RUNNING_STATUSES = new Set(["running", "starting", "queued", "validating_files"]);
+const FAILED_STATUSES = new Set(["failed", "error"]);
+const SUCCEEDED_STATUSES = new Set(["succeeded", "completed"]);
 
 type JobListItem = {
   id: string;
@@ -28,6 +34,13 @@ type JobListItem = {
   } | null;
   resultFilesJson?: Array<{ type: string; path: string }> | null;
 };
+
+function jobMatchesFilter(job: JobListItem, filter: JobFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "running") return RUNNING_STATUSES.has(job.status);
+  if (filter === "failed") return FAILED_STATUSES.has(job.status);
+  return SUCCEEDED_STATUSES.has(job.status);
+}
 
 function BackendBadge({ job }: { job: JobListItem }) {
   if (job.modelProvider !== "local") return null;
@@ -88,6 +101,7 @@ function MiniSparkline({ data }: { data: Array<{ step: number; loss: number }> }
 export function JobsPageClient() {
   const [jobs, setJobs] = useState<JobListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<JobFilter>("all");
 
   useEffect(() => {
     pythonApiFetch<JobListItem[]>("/jobs")
@@ -95,8 +109,13 @@ export function JobsPageClient() {
       .catch((requestError: Error) => setError(requestError.message));
   }, []);
 
+  const filteredJobs = useMemo(() => {
+    if (!jobs) return null;
+    return jobs.filter((j) => jobMatchesFilter(j, filter));
+  }, [jobs, filter]);
+
   if (error) return <ErrorAlert title="Could not load jobs" description={error} />;
-  if (!jobs) return <LoadingState label="Loading jobs..." />;
+  if (!jobs) return <LoadingState variant="list" />;
 
   if (jobs.length === 0) {
     return (
@@ -117,6 +136,13 @@ export function JobsPageClient() {
     );
   }
 
+  const filterOptions: { key: JobFilter; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "running", label: "Running" },
+    { key: "failed", label: "Failed" },
+    { key: "succeeded", label: "Completed" }
+  ];
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -126,7 +152,36 @@ export function JobsPageClient() {
         </Link>
       </div>
 
-      {jobs.map((job) => {
+      {/* Status filter pills */}
+      <div className="flex flex-wrap gap-1.5">
+        {filterOptions.map(({ key, label }) => {
+          const count = key === "all" ? jobs.length : jobs.filter((j) => jobMatchesFilter(j, key)).length;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setFilter(key)}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs font-semibold transition",
+                filter === key
+                  ? "bg-ink text-white"
+                  : "bg-black/6 text-black/55 hover:bg-black/10"
+              )}
+            >
+              {label}
+              {key !== "all" && count > 0 && <span className="ml-1 opacity-70">· {count}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {filteredJobs?.length === 0 && filter !== "all" && (
+        <p className="rounded-[1.5rem] border border-black/8 bg-white/70 px-5 py-6 text-sm text-black/45">
+          No {filter === "succeeded" ? "completed" : filter} runs yet.
+        </p>
+      )}
+
+      {(filteredJobs ?? []).map((job) => {
         const hasGguf = job.resultFilesJson?.some((f) => f.type === "local_gguf") ?? false;
         const lossHistory = job.progressJson?.lossHistory ?? [];
         const lastLoss = lossHistory.length > 0 ? lossHistory[lossHistory.length - 1].loss : null;

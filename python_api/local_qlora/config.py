@@ -25,7 +25,7 @@ class LocalQLoraJobConfig:
     allow_cpu_fallback: bool = False
     seed: int = 42
     eval_ratio: float = 0.1
-    export_gguf: bool = False
+    export_gguf: bool = True
     gguf_quantization: str = "q4_k_m"
     push_to_ollama: bool = False
     ollama_model_name: str = ""
@@ -99,7 +99,7 @@ class LocalQLoraJobConfig:
             allow_cpu_fallback=bool(payload.get("allowCpuFallback", False)),
             seed=int(payload.get("seed", 42)),
             eval_ratio=float(payload.get("evalRatio", 0.1)),
-            export_gguf=bool(payload.get("exportGguf", False)),
+            export_gguf=bool(payload.get("exportGguf", True)),
             gguf_quantization=str(payload.get("ggufQuantization", "q4_k_m")),
             push_to_ollama=bool(payload.get("pushToOllama", False)),
             ollama_model_name=str(payload.get("ollamaModelName", "")),

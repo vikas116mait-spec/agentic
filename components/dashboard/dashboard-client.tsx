@@ -18,10 +18,10 @@ import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { LoadingState } from "@/components/ui/loading-state";
 import { StatusBadge } from "@/components/status-badge";
-import { pythonApiFetch } from "@/lib/python-api";
+import { getPythonApiBaseUrl, pythonApiFetch } from "@/lib/python-api";
 import { formatDate } from "@/lib/utils";
 
-type DashboardSummary = {
+export type DashboardSummary = {
   totalDatasets: number;
   totalJobs: number;
   runningJobs: number;
@@ -84,18 +84,31 @@ const pillars = [
   }
 ];
 
-export function DashboardClient() {
-  const [data, setData] = useState<DashboardSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function DashboardClient({
+  initialData = null,
+  initialError = null,
+}: {
+  initialData?: DashboardSummary | null;
+  initialError?: string | null;
+}) {
+  const [data, setData] = useState<DashboardSummary | null>(initialData);
+  const [error, setError] = useState<string | null>(initialError);
 
   useEffect(() => {
     pythonApiFetch<DashboardSummary>("/dashboard/summary")
-      .then(setData)
-      .catch((requestError: Error) => setError(requestError.message));
-  }, []);
+      .then((payload) => {
+        setData(payload);
+        setError(null);
+      })
+      .catch((requestError: Error) => {
+        if (!initialData) {
+          setError(requestError.message);
+        }
+      });
+  }, [initialData]);
 
   if (error) {
-    return <ErrorAlert title="Cannot reach the API" description={`Start the Python service on port 8001. ${error}`} />;
+    return <ErrorAlert title="Cannot reach the API" description={`Start the Python service at ${getPythonApiBaseUrl()}. ${error}`} />;
   }
 
   if (!data) {
@@ -186,13 +199,11 @@ export function DashboardClient() {
               <p className="text-xs uppercase tracking-[0.2em] text-white/55">Unsloth-supported models</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 {[
-                  "Llama 3.1 / 3.2 / 3.3",
                   "Qwen 2.5 0.5B–72B",
-                  "Gemma 3",
                   "Mistral v0.3",
-                  "Phi-4",
+                  "Phi 3.5 Mini",
                   "DeepSeek-R1",
-                  "Gemma 2"
+                  "Qwen 3"
                 ].map((label) => (
                   <span key={label} className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-white/80">
                     {label}
