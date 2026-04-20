@@ -10,6 +10,127 @@ The app now runs in direct local-workspace mode:
 - Temporal now powers durable agent runs for long-lived orchestration
 - UI button clicks call the Python API directly
 
+## Quick Start
+
+Use this path if you want the cheapest and simplest local setup.
+
+### 1. Install prerequisites
+
+Install these tools first:
+
+- Node.js `22`
+- Python `3.12`
+- Ollama
+
+### 2. Create or update `.env`
+
+If you do not already have a `.env` file, copy `.env.example` to `.env`.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then make sure your `.env` contains these values:
+
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/agentic"
+LLM_PROVIDER="ollama"
+OLLAMA_BASE_URL="http://127.0.0.1:11434"
+OLLAMA_BASE_MODEL="qwen3:8b"
+OLLAMA_AGENT_MODEL="qwen3:8b"
+OPENAI_API_KEY=""
+OPENAI_AGENT_MODEL="gpt-5.4-mini"
+NEXTAUTH_SECRET=""
+NEXTAUTH_URL="http://localhost:3000"
+PYTHON_API_URL="http://127.0.0.1:8001"
+TEMPORAL_ADDRESS="127.0.0.1:7233"
+TEMPORAL_NAMESPACE="default"
+TEMPORAL_TASK_QUEUE="agentic-agent-queue"
+TEMPORAL_AUTO_START_DEV_SERVER="1"
+TEMPORAL_DEV_SERVER_UI="0"
+```
+
+If you already have a `NEXTAUTH_SECRET`, you can keep your current value.
+
+### 3. Install the local model
+
+Pull the default Ollama model:
+
+```powershell
+ollama pull qwen3:8b
+```
+
+If Ollama is not already running, start it:
+
+```powershell
+ollama serve
+```
+
+### 4. Start the Python API
+
+Open terminal 1:
+
+```powershell
+cd C:\Users\vikas\Desktop\Learning\agentic
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m uvicorn python_api.main:app --host 0.0.0.0 --port 8001
+```
+
+If PowerShell blocks script execution, use the virtual environment Python directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn python_api.main:app --host 0.0.0.0 --port 8001
+```
+
+When the API starts, it will automatically start a local Temporal dev server and worker when `TEMPORAL_AUTO_START_DEV_SERVER="1"`.
+
+### 5. Start the Next.js app
+
+Open terminal 2:
+
+```powershell
+cd C:\Users\vikas\Desktop\Learning\agentic
+npm install
+npm run dev
+```
+
+### 6. Open the app
+
+Open these pages in your browser:
+
+```text
+http://localhost:3000/dashboard
+http://localhost:3000/agent
+http://localhost:3000/playground
+```
+
+### 7. Check that services are healthy
+
+You can verify the backend with:
+
+```text
+http://127.0.0.1:8001/health
+http://127.0.0.1:8001/agent/runtime
+```
+
+### 8. Know what works in local Ollama mode
+
+These features work in the cheap local setup:
+
+- dashboard
+- dataset upload and validation
+- playground runs
+- agent runs through the Python API and Temporal
+
+These features still require `LLM_PROVIDER=openai` and a real `OPENAI_API_KEY`:
+
+- uploading datasets to OpenAI
+- managed fine-tuning jobs
+- syncing hosted OpenAI fine-tuning job state
+
 ## What This App Does
 
 - Upload `.jsonl` training datasets
@@ -169,7 +290,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ## Local Setup Flow
 
 ### Cheapest local mode
+The full step-by-step path is in `Quick Start` above.
 
+<<<<<<< HEAD
 Install Ollama, then pull a local model before starting the app:
 
 ```powershell
@@ -219,9 +342,14 @@ http://localhost:3000/agent
 ```
 
 If you are opening the app from another device on your network, use your machine IP:
+=======
+If you are opening the app from another device on your network, use your machine IP instead of `localhost`:
+>>>>>>> 93ab86cdaa10e62776f18237495ed8b6f274ad23
 
 ```text
 http://<your-ip>:3000/dashboard
+http://<your-ip>:3000/agent
+http://<your-ip>:3000/playground
 ```
 
 ## Useful Commands
@@ -239,6 +367,8 @@ curl http://127.0.0.1:8001/agent/runtime
 ```
 
 ## Docker Compose
+
+Docker is optional. For most local development, use the direct `Quick Start` flow above first.
 
 There are now two Compose paths:
 
