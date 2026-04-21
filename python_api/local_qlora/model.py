@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from pathlib import Path
 from typing import Any
 
+from python_api.debug_log import write_debug_log
 from python_api.local_qlora.config import LocalQLoraJobConfig
+from python_api.store import ROOT
 
 
 def local_training_enabled() -> bool:
@@ -65,9 +68,27 @@ def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, An
         )
 
     hyperparameters = config.resolved_hyperparameters()
+    workspace_compile_cache = ROOT / "unsloth_compiled_cache"
+    configured_compile_location = os.environ.get("UNSLOTH_COMPILE_LOCATION")
 
     # ── Unsloth path: 2x faster, 70% less VRAM ───────────────────────────────
     try:
+        # region agent log
+        write_debug_log(
+            location="python_api/local_qlora/model.py:load_quantized_model:before_unsloth_import",
+            message="Attempting Unsloth model load",
+            data={
+                "jobId": config.job_id,
+                "cwd": os.getcwd(),
+                "workspaceCompileCacheExists": workspace_compile_cache.exists(),
+                "workspaceCompileCachePath": str(workspace_compile_cache),
+                "compileLocationEnv": configured_compile_location,
+                "baseModel": config.base_model,
+            },
+            run_id=config.job_id,
+            hypothesis_id="H1",
+        )
+        # endregion
         from unsloth import FastLanguageModel
 
         model, tokenizer = FastLanguageModel.from_pretrained(
@@ -89,11 +110,40 @@ def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, An
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
+        # region agent log
+        write_debug_log(
+            location="python_api/local_qlora/model.py:load_quantized_model:after_unsloth_load",
+            message="Completed Unsloth model load",
+            data={
+                "jobId": config.job_id,
+                "workspaceCompileCacheExists": workspace_compile_cache.exists(),
+                "workspaceCompileCacheFiles": sorted(path.name for path in Path(workspace_compile_cache).glob("*.py"))
+                if workspace_compile_cache.exists()
+                else [],
+                "compileLocationEnv": configured_compile_location,
+            },
+            run_id=config.job_id,
+            hypothesis_id="H1",
+        )
+        # endregion
 
         # peft_config=None signals to the trainer that LoRA is already applied
         return model, tokenizer, None, torch
 
     except ImportError:
+        # region agent log
+        write_debug_log(
+            location="python_api/local_qlora/model.py:load_quantized_model:unsloth_missing",
+            message="Falling back to standard PEFT path",
+            data={
+                "jobId": config.job_id,
+                "workspaceCompileCacheExists": workspace_compile_cache.exists(),
+                "compileLocationEnv": configured_compile_location,
+            },
+            run_id=config.job_id,
+            hypothesis_id="H4",
+        )
+        # endregion
         pass  # Unsloth not installed — fall through to standard HF path
 
     # ── Fallback: standard HuggingFace + PEFT (original behaviour) ───────────

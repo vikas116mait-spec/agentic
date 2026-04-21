@@ -96,6 +96,12 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
       .catch((requestError: Error) => setError(requestError.message));
   }, [initialDatasetId]);
 
+  useEffect(() => {
+    if (!exportGguf && pushToOllama) {
+      setPushToOllama(false);
+    }
+  }, [exportGguf, pushToOllama]);
+
   const fineTuningProfiles = useMemo(
     () => sortFineTuningProfiles((profilesData?.profiles ?? []).filter(isSelectableFineTuningProfile)),
     [profilesData?.profiles]
@@ -145,7 +151,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
             trainingPreset,
             exportGguf,
             ggufQuantization,
-            pushToOllama,
+            pushToOllama: exportGguf ? pushToOllama : false,
             ollamaModelName,
             numEpochs,
             learningRate,

@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from python_api.debug_log import write_debug_log
 from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.local_qlora.export import ensure_ollama_runtime_ready, ollama_runtime_summary
 from python_api.local_qlora.model import local_training_enabled
@@ -19,6 +20,16 @@ from python_api.store import ROOT, utc_now_iso
 
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def _unsloth_compile_location() -> str:
+    override = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+    else:
+        path = Path.home() / ".cache" / "agentic" / "unsloth_compiled_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def configured_local_training_python() -> str:
@@ -72,13 +83,26 @@ print(json.dumps(summary))
     result = subprocess.run(
         [local_training_python(), "-c", probe],
         cwd=str(ROOT),
-        env=os.environ.copy(),
+        env={**os.environ.copy(), "UNSLOTH_COMPILE_LOCATION": _unsloth_compile_location()},
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Could not inspect the local training runtime: {result.stderr.strip() or result.stdout.strip()}")
+    # region agent log
+    write_debug_log(
+        location="python_api/local_qlora/__init__.py:_probe_training_runtime",
+        message="Probed local training runtime",
+        data={
+            "configuredPython": local_training_python(),
+            "compileLocationEnv": _unsloth_compile_location(),
+            "workspaceCompileCacheExists": (ROOT / "unsloth_compiled_cache").exists(),
+        },
+        run_id="initial",
+        hypothesis_id="H2",
+    )
+    # endregion
     return json.loads(result.stdout)
 
 
@@ -445,6 +469,23 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         launch_env["CUDA_VISIBLE_DEVICES"] = str(selected_gpu["index"])
         launch_env["LOCAL_TRAINING_SELECTED_GPU"] = str(selected_gpu["index"])
     launch_env.setdefault("PYTHONUNBUFFERED", "1")
+    launch_env.setdefault("UNSLOTH_COMPILE_LOCATION", _unsloth_compile_location())
+    # region agent log
+    write_debug_log(
+        location="python_api/local_qlora/__init__.py:spawn_local_training_job",
+        message="Launching local trainer subprocess",
+        data={
+            "jobId": config.job_id,
+            "cwd": str(ROOT),
+            "command": command,
+            "compileLocationEnv": launch_env.get("UNSLOTH_COMPILE_LOCATION"),
+            "workspaceCompileCacheExists": (ROOT / "unsloth_compiled_cache").exists(),
+            "useMultiGpu": use_multi_gpu,
+        },
+        run_id=config.job_id,
+        hypothesis_id="H3",
+    )
+    # endregion
 
     with log_path.open("a", encoding="utf-8", buffering=1) as log_file:
         process = subprocess.Popen(

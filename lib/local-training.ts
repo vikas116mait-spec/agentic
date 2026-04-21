@@ -65,7 +65,13 @@ export function describeModelTier(modelId: string) {
     };
   }
 
-  if (normalized.includes("1.5b") || normalized.includes("3b") || normalized.includes("4b")) {
+  if (
+    normalized.includes("1.5b") ||
+    normalized.includes("1.7b") ||
+    normalized.includes("2b") ||
+    normalized.includes("3b") ||
+    normalized.includes("4b")
+  ) {
     return {
       tier: "Balanced",
       useCase: "Good default for fast local iteration with usable quality.",

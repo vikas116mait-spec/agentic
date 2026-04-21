@@ -57,6 +57,9 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
     { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended free local fine-tune" },
     { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Lower-VRAM fallback for local training" },
     { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Fastest smoke-test fallback" },
+    { value: "HuggingFaceTB/SmolLM2-1.7B-Instruct", label: "SmolLM2 1.7B Instruct", hint: "Very small free instruct model for light GPUs" },
+    { value: "ibm-granite/granite-3.1-2b-instruct", label: "Granite 3.1 2B Instruct", hint: "Compact IBM model with good quality for its size" },
+    { value: "tiiuae/Falcon3-3B-Instruct", label: "Falcon 3 3B Instruct", hint: "Another free 3B family for local QLoRA runs" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact model with good quality per GPU" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Strong open instruct model if you want another family" },
     { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Larger free model if you want stronger quality" }
