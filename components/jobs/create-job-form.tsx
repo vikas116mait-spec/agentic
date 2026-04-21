@@ -6,7 +6,13 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { LoadingState } from "@/components/ui/loading-state";
-import { findModelProfile, isFineTuningProfile, isRunnableProfile, modelProfileLabel } from "@/lib/model-profiles";
+import {
+  findModelProfile,
+  isRunnableProfile,
+  isSelectableFineTuningProfile,
+  modelProfileLabel,
+  sortFineTuningProfiles,
+} from "@/lib/model-profiles";
 import { pythonApiFetch } from "@/lib/python-api";
 import type { ModelProfilesResponse } from "@/lib/types";
 
@@ -27,14 +33,22 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
   // Export options — only relevant for local QLoRA jobs
   const [exportGguf, setExportGguf] = useState(true);
   const [ggufQuantization, setGgufQuantization] = useState("q4_k_m");
-  const [pushToOllama, setPushToOllama] = useState(false);
+  const [pushToOllama, setPushToOllama] = useState(true);
   const [ollamaModelName, setOllamaModelName] = useState("");
 
   // Hyperparameters — collapsible, local provider only
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [numEpochs, setNumEpochs] = useState(3);
-  const [learningRate, setLearningRate] = useState(2e-4);
+  const [learningRate, setLearningRate] = useState(1e-4);
   const [perDeviceBatchSize, setPerDeviceBatchSize] = useState(2);
+
+  function preferredFreeProfile(profiles: ModelProfilesResponse["profiles"]) {
+    return (
+      profiles.find((profile) => profile.provider === "local" && profile.model === "Qwen/Qwen2.5-3B-Instruct") ??
+      profiles.find((profile) => profile.provider === "local") ??
+      null
+    );
+  }
 
   useEffect(() => {
     Promise.all([
@@ -42,11 +56,12 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
       pythonApiFetch<ModelProfilesResponse>("/settings/model-profiles")
     ])
       .then(([items, profilesPayload]) => {
-        const fineTuningProfiles = profilesPayload.profiles.filter(isFineTuningProfile);
+        const fineTuningProfiles = sortFineTuningProfiles(profilesPayload.profiles.filter(isSelectableFineTuningProfile));
+        const freeProfile = preferredFreeProfile(fineTuningProfiles);
         const preferredProfile = findModelProfile(fineTuningProfiles, profilesPayload.defaults.jobBaseProfileId);
         setDatasets(items);
         setProfilesData(profilesPayload);
-        setProfileId((current) => current || preferredProfile?.id || fineTuningProfiles[0]?.id || "");
+        setProfileId((current) => current || freeProfile?.id || preferredProfile?.id || fineTuningProfiles[0]?.id || "");
         if (!datasetId && items[0]?.id) {
           setDatasetId(items[0].id);
         }
@@ -55,7 +70,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
   }, [initialDatasetId]);
 
   const fineTuningProfiles = useMemo(
-    () => (profilesData?.profiles ?? []).filter(isFineTuningProfile),
+    () => sortFineTuningProfiles((profilesData?.profiles ?? []).filter(isSelectableFineTuningProfile)),
     [profilesData?.profiles]
   );
   const runnableProfiles = useMemo(
@@ -68,6 +83,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
   );
 
   const isLocalProvider = selectedProfile?.provider === "local";
+  const selectedProfileNeedsSetup = Boolean(selectedProfile && !selectedProfile.providerConfigured);
 
   async function handleCreate() {
     if (!selectedProfile) {
@@ -124,7 +140,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
       <div className="space-y-4 rounded-[1.5rem] border border-black/8 bg-white/80 p-6 shadow-sm">
         <ErrorAlert
           title="No fine-tuning profiles available"
-          description="Create or enable an OpenAI, Hugging Face Jobs, or Local GPU QLoRA profile in Models. Set OPENAI_API_KEY for OpenAI, HF_TOKEN for Hugging Face Jobs, or keep LOCAL_TRAINING_ENABLED on to use your own GPU."
+          description="Create or enable a Local GPU QLoRA profile in Models for the free path. Set LOCAL_TRAINING_ENABLED=1 and LOCAL_TRAINING_PYTHON to your training venv, then come back here."
         />
         {runnableProfiles.length > 0 ? (
           <div className="rounded-2xl bg-amber-50 p-4 text-sm text-black/70">
@@ -161,6 +177,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
             {fineTuningProfiles.map((profile) => (
               <option key={profile.id} value={profile.id}>
                 {modelProfileLabel(profile)}
+                {profile.providerConfigured ? "" : " | setup needed"}
               </option>
             ))}
           </select>
@@ -176,12 +193,24 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
       ) : null}
 
       {isLocalProvider ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-black/70">
+          Recommended free path: Local GPU QLoRA trains on your own NVIDIA GPU, saves the adapter locally, and can auto-export to GGUF for Ollama.
+        </div>
+      ) : null}
+
+      {selectedProfileNeedsSetup ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-black/70">
+          Local GPU QLoRA is selected, but this workspace still needs setup. Point <code>LOCAL_TRAINING_PYTHON</code> at a real training venv Python, then restart the Python API so the free path becomes runnable.
+        </div>
+      ) : null}
+
+      {isLocalProvider ? (
         <>
         <div className="rounded-[1.5rem] border border-black/8 bg-white/80 p-5 space-y-4">
           <p className="text-sm font-medium text-black/70">Export options</p>
           <p className="text-sm text-black/55">
             The base model is downloaded automatically for local fine-tuning. After training, the adapter is saved on
-            disk and a GGUF export is enabled by default so you can download a ready-to-use artifact.
+            disk, GGUF export is enabled by default, and Ollama registration is the recommended end state when your local Ollama runtime is available.
           </p>
 
           <label className={checkboxLabelClassName}>
@@ -226,13 +255,13 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
                   <span className="text-black/60">Ollama model name</span>
                   <input
                     type="text"
-                    placeholder="e.g. my-fine-tuned-model"
+                    placeholder="Leave blank to auto-generate"
                     value={ollamaModelName}
                     onChange={(e) => setOllamaModelName(e.target.value)}
                     className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
                   />
                   <p className="text-xs text-black/45">
-                    After training, run <code className="font-mono">ollama run {ollamaModelName || "your-model-name"}</code> to use it.
+                    Leave this blank to auto-generate a name from the dataset and base model. After training, run <code className="font-mono">ollama run {ollamaModelName || "generated-model-name"}</code> to use it.
                   </p>
                 </label>
               ) : null}
@@ -276,7 +305,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
                   onChange={(e) => setLearningRate(Number(e.target.value))}
                   className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
                 />
-                <p className="text-xs text-black/40">Default: 0.0002. Lower = slower, more stable.</p>
+                <p className="text-xs text-black/40">Default: 0.0001. Lower = slower, more stable.</p>
               </label>
               <label className="space-y-1.5 text-sm">
                 <span className="font-medium text-black/70">Batch size (per device)</span>
@@ -300,12 +329,12 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
 
       {error ? <p className="text-sm text-danger">{error}</p> : null}
 
-      <Button disabled={loading || !datasetId || !selectedProfile} onClick={handleCreate}>
-        {loading ? "Starting..." : "Start fine-tuning"}
+      <Button disabled={loading || !datasetId || !selectedProfile || selectedProfileNeedsSetup} onClick={handleCreate}>
+        {loading ? "Starting..." : selectedProfileNeedsSetup ? "Complete local setup to continue" : "Start fine-tuning"}
       </Button>
 
       <p className="text-sm text-black/45">
-        Tip: use Local GPU QLoRA for free local experiments. Install Unsloth for 2x speed and 70% less VRAM.
+        Tip: for free fine-tuning, point <code>LOCAL_TRAINING_PYTHON</code> at your <code>.venv-train</code> runtime and install Unsloth for faster GGUF export with less VRAM.
       </p>
     </div>
   );

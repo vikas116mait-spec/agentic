@@ -64,6 +64,8 @@ type JobProgressSnapshot = {
   gpuMetrics?: GpuMetric[] | null;
   lossHistory?: Array<{ step: number; loss: number }> | null;
   unslothActive?: boolean | null;
+  warnings?: string[] | null;
+  ollamaRegistered?: boolean | null;
 };
 
 type ResultFile = {
@@ -256,6 +258,7 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
   const gpuMetrics = job.progressJson?.gpuMetrics ?? null;
   const lossHistory = job.progressJson?.lossHistory ?? [];
   const unslothActive = job.progressJson?.unslothActive ?? null;
+  const warnings = job.progressJson?.warnings ?? [];
   const progressPercent = progress?.percent ?? null;
   const currentStage = stageLabel(job.progressJson?.stage);
   const stageDescription = job.statusMessage ?? stageSummary(job.progressJson?.stage);
@@ -414,6 +417,19 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
           </div>
         ) : null}
 
+        {warnings.length > 0 ? (
+          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Warnings</p>
+            <div className="mt-3 space-y-2">
+              {warnings.map((warning) => (
+                <p key={warning} className="text-sm text-black/70">
+                  {warning}
+                </p>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-2xl bg-white p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-black/45">Provider job id</p>
@@ -553,6 +569,7 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
             modelProvider={job.modelProvider}
             baseModel={job.baseModel}
             ollamaModelName={job.ollamaModelName}
+            ollamaRegistered={job.progressJson?.ollamaRegistered ?? false}
           />
         </Card>
       ) : null}

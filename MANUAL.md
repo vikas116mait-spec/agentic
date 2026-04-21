@@ -224,7 +224,7 @@ source .venv-train/bin/activate
 
 pip install -r requirements-local-training.txt
 
-# Point to this Python in .env:
+# Point to this Python in .env (required for free local fine-tuning):
 # LOCAL_TRAINING_PYTHON="/path/to/agentic/.venv-train/bin/python"
 ```
 
@@ -288,7 +288,7 @@ If `DATABASE_URL` is not set, the app falls back to a local JSON file at `python
 ### Hugging Face (Cloud Fine-tuning)
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HF_TOKEN` | _(empty)_ | HF access token (required for HF jobs) |
+| `HF_TOKEN` | _(empty)_ | HF access token (required for paid HF Jobs runs) |
 | `HF_NAMESPACE` | _(your username)_ | HF user/org for repos |
 | `HF_BASE_MODEL` | `Qwen/Qwen2.5-3B-Instruct` | Default base model |
 | `HF_DATASET_REPO` | _(empty)_ | Dataset repo ID on HF Hub |
@@ -302,7 +302,7 @@ If `DATABASE_URL` is not set, the app falls back to a local JSON file at `python
 |----------|---------|-------------|
 | `LOCAL_TRAINING_ENABLED` | `1` | Set to `1` to enable local training |
 | `LOCAL_TRAINING_BASE_MODEL` | `Qwen/Qwen2.5-3B-Instruct` | Default base model |
-| `LOCAL_TRAINING_PYTHON` | _(system python)_ | Python path for training venv |
+| `LOCAL_TRAINING_PYTHON` | _(required)_ | Python path for the separate training venv |
 | `LOCAL_TRAINING_ALLOW_CPU_FALLBACK` | `0` | Set `1` to allow CPU training (very slow) |
 | `LOCAL_TRAINING_MULTI_GPU` | `0` | Set `1` for multi-GPU training |
 | `LOCAL_TRAINING_GPU_INDEX` | _(all)_ | Specific GPU index (e.g., `2`) |

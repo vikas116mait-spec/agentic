@@ -75,7 +75,7 @@ class CreateJobRequest(BaseModel):
     hyperparameters: dict[str, Any] | None = None
     exportGguf: bool = True
     ggufQuantization: str = "q4_k_m"
-    pushToOllama: bool = False
+    pushToOllama: bool = True
     ollamaModelName: str = ""
     numEpochs: int | None = None
     learningRate: float | None = None

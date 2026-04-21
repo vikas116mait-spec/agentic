@@ -244,9 +244,9 @@ HF_TRACKIO_PROJECT="agentic-training"
 HF_TRACKIO_SPACE_ID=""
 LOCAL_TRAINING_ENABLED="1"
 LOCAL_TRAINING_BASE_MODEL="Qwen/Qwen2.5-3B-Instruct"
-LOCAL_TRAINING_PYTHON=""
+LOCAL_TRAINING_PYTHON="/path/to/agentic/.venv-train/bin/python"
 LOCAL_TRAINING_ALLOW_CPU_FALLBACK="0"
-LOCAL_TRAINING_MULTI_GPU="1"
+LOCAL_TRAINING_MULTI_GPU="0"
 LOCAL_TRAINING_EVAL_RATIO="0.1"
 LOCAL_TRAINING_SEED="42"
 NEXTAUTH_SECRET=""
@@ -264,8 +264,8 @@ For the current Python-backed and Temporal-backed flow, the most important value
 - `LLM_PROVIDER`
 - `OLLAMA_BASE_URL` plus your local model names for near-free local use
 - `OPENAI_API_KEY` when you want managed OpenAI fine-tuning
-- `HF_TOKEN` when you want open-source fine-tuning through Hugging Face Jobs
-- `LOCAL_TRAINING_ENABLED` when you want to fine-tune on your own GPU
+- `HF_TOKEN` when you want paid cloud fine-tuning through Hugging Face Jobs
+- `LOCAL_TRAINING_ENABLED` plus `LOCAL_TRAINING_PYTHON` when you want the recommended free fine-tuning path on your own GPU
 
 You can also set:
 
@@ -307,7 +307,7 @@ cd C:\Users\vikas\Desktop\Learning\agentic
 pip install -r requirements.txt
 ```
 
-If you want to use the Local GPU QLoRA backend, install the trainer stack into the Python interpreter referenced by `LOCAL_TRAINING_PYTHON`:
+If you want to use the recommended free Local GPU QLoRA backend, install the trainer stack into the Python interpreter referenced by `LOCAL_TRAINING_PYTHON`:
 
 ```powershell
 pip install -r requirements-local-training.txt

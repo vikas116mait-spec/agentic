@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from python_api.local_qlora.config import LocalQLoraJobConfig
+from python_api.local_qlora.export import ensure_ollama_runtime_ready
 from python_api.local_qlora.model import local_training_enabled
 from python_api.local_qlora.state import append_event, read_status_file, write_status_file
 from python_api.store import ROOT, utc_now_iso
@@ -20,14 +21,20 @@ from python_api.store import ROOT, utc_now_iso
 logger = logging.getLogger("uvicorn.error")
 
 
+def configured_local_training_python() -> str:
+    return (os.environ.get("LOCAL_TRAINING_PYTHON") or "").strip()
+
+
 def local_training_python() -> str:
-    return (os.environ.get("LOCAL_TRAINING_PYTHON") or sys.executable).strip() or sys.executable
+    return configured_local_training_python() or sys.executable
 
 
 def local_training_provider_is_configured() -> bool:
     if not local_training_enabled():
         return False
-    python_executable = local_training_python()
+    python_executable = configured_local_training_python()
+    if not python_executable:
+        return False
     return Path(python_executable).exists() if os.path.isabs(python_executable) else shutil.which(python_executable) is not None
 
 
@@ -75,9 +82,30 @@ print(json.dumps(summary))
     return json.loads(result.stdout)
 
 
-def ensure_local_training_ready(*, allow_cpu_fallback: bool = False) -> dict[str, Any]:
+def ensure_local_training_ready(
+    *,
+    allow_cpu_fallback: bool = False,
+    export_gguf: bool = False,
+    push_to_ollama: bool = False,
+) -> dict[str, Any]:
     if not local_training_enabled():
         raise RuntimeError("Local GPU QLoRA training is disabled. Set LOCAL_TRAINING_ENABLED=1 to use your own GPU.")
+
+    configured_python = configured_local_training_python()
+    if not configured_python:
+        raise RuntimeError(
+            "Set LOCAL_TRAINING_PYTHON to the Python executable inside your training venv before starting a local GPU QLoRA job."
+        )
+
+    python_executable = local_training_python()
+    python_exists = Path(python_executable).exists() if os.path.isabs(python_executable) else shutil.which(python_executable) is not None
+    if not python_exists:
+        raise RuntimeError(
+            f"LOCAL_TRAINING_PYTHON points to `{python_executable}`, but that executable was not found. Update the path to your training venv Python."
+        )
+
+    if push_to_ollama and not export_gguf:
+        raise RuntimeError("Push to Ollama requires GGUF export. Enable exportGguf before enabling Push to Ollama.")
 
     summary = _probe_training_runtime()
     missing = [name for name, available in summary["dependencies"].items() if not available]
@@ -93,7 +121,39 @@ def ensure_local_training_ready(*, allow_cpu_fallback: bool = False) -> dict[str
             "No CUDA-visible GPU was detected by the Python runtime. Set LOCAL_TRAINING_ALLOW_CPU_FALLBACK=1 only if you intentionally want CPU fallback."
         )
 
+    warnings: list[str] = []
+    if export_gguf and not summary.get("unslothAvailable"):
+        warnings.append(
+            "Unsloth is not installed in LOCAL_TRAINING_PYTHON, so this run will still save the adapter but skip GGUF export and Ollama registration."
+        )
+
+    if push_to_ollama:
+        summary["ollama"] = ensure_ollama_runtime_ready()
+
+    if warnings:
+        summary["warnings"] = warnings
+
     return summary
+
+
+def _runtime_summary_payload(
+    runtime: dict[str, Any],
+    *,
+    gpu_count: int,
+    use_multi_gpu: bool,
+    selected_gpu: dict[str, int | str] | None,
+) -> dict[str, Any]:
+    ollama_summary = runtime.get("ollama") or {}
+    return {
+        "gpuCount": gpu_count,
+        "runtimePython": runtime.get("python"),
+        "multiGpu": use_multi_gpu,
+        "selectedGpu": selected_gpu["index"] if selected_gpu else None,
+        "selectedGpuFreeMb": selected_gpu["memoryFreeMb"] if selected_gpu else None,
+        "unslothAvailable": runtime.get("unslothAvailable"),
+        "warnings": runtime.get("warnings") or [],
+        "ollamaHost": ollama_summary.get("host"),
+    }
 
 
 def _process_is_running(process_id: int | None) -> bool:
@@ -254,23 +314,6 @@ def _poll_gpu_metrics(status_path: Path, process_id: int, stop_event: threading.
         stop_event.wait(timeout=3)
 
 
-def _tee_process_output(process: subprocess.Popen[str], *, log_path: Path, job_id: str) -> None:
-    if process.stdout is None:
-        return
-
-    prefix = f"[local-qlora:{job_id[:8]}]"
-
-    def reader() -> None:
-        with log_path.open("a", encoding="utf-8") as log_file:
-            for raw_line in process.stdout:
-                line = raw_line.rstrip("\n")
-                log_file.write(raw_line)
-                log_file.flush()
-                logger.info("%s %s", prefix, line)
-
-    threading.Thread(target=reader, name=f"local-qlora-log-{job_id[:8]}", daemon=True).start()
-
-
 def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     config_path = config.write()
     log_path = Path(config.log_path)
@@ -300,6 +343,13 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
     else:
         command = [local_training_python(), "-m", "python_api.local_qlora.runner", str(config_path)]
 
+    runtime_payload = _runtime_summary_payload(
+        runtime,
+        gpu_count=gpu_count,
+        use_multi_gpu=use_multi_gpu,
+        selected_gpu=selected_gpu,
+    )
+
     initial_status = {
         "status": "running",
         "stage": "queued",
@@ -308,16 +358,14 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         "updatedAt": utc_now_iso(),
         "baseModel": config.base_model,
         "modelOutputPath": config.model_output_path,
-        "runtimeSummary": {
-            "gpuCount": gpu_count,
-            "runtimePython": runtime.get("python"),
-            "multiGpu": use_multi_gpu,
-            "selectedGpu": selected_gpu["index"] if selected_gpu else None,
-            "selectedGpuFreeMb": selected_gpu["memoryFreeMb"] if selected_gpu else None,
-        },
+        "runtimeSummary": runtime_payload,
+        "warnings": runtime_payload["warnings"],
+        "ollamaRegistered": False,
     }
     write_status_file(Path(config.status_path), initial_status)
     append_event(Path(config.events_path), "info", "Local GPU QLoRA job queued.", event_type="job_created")
+    for warning in runtime_payload["warnings"]:
+        append_event(Path(config.events_path), "warning", warning, event_type="preflight_warning")
     if selected_gpu:
         append_event(
             Path(config.events_path),
@@ -333,19 +381,20 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
     if selected_gpu and not use_multi_gpu:
         launch_env["CUDA_VISIBLE_DEVICES"] = str(selected_gpu["index"])
         launch_env["LOCAL_TRAINING_SELECTED_GPU"] = str(selected_gpu["index"])
+    launch_env.setdefault("PYTHONUNBUFFERED", "1")
 
-    process = subprocess.Popen(
-        command,
-        cwd=str(ROOT),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-        env=launch_env,
-    )
-    _tee_process_output(process, log_path=log_path, job_id=config.job_id)
+    with log_path.open("a", encoding="utf-8", buffering=1) as log_file:
+        process = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+            env=launch_env,
+        )
 
     # Start GPU metrics polling — stops automatically when the process exits
     _gpu_poll_stop = threading.Event()
@@ -403,16 +452,12 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         "trainingBackend": "local_qlora",
         "progressJson": {
             "stage": "queued",
-            "runtimeSummary": {
-                "gpuCount": gpu_count,
-                "runtimePython": runtime.get("python"),
-                "multiGpu": use_multi_gpu,
-                "selectedGpu": selected_gpu["index"] if selected_gpu else None,
-                "selectedGpuFreeMb": selected_gpu["memoryFreeMb"] if selected_gpu else None,
-            },
+            "runtimeSummary": runtime_payload,
             "datasetStats": None,
             "progress": None,
             "metrics": None,
+            "warnings": runtime_payload["warnings"],
+            "ollamaRegistered": False,
         },
     }
 
@@ -465,6 +510,8 @@ def inspect_local_training_job(job_record: dict[str, Any]) -> dict[str, Any]:
             "lossHistory": status_payload.get("lossHistory") or [],
             "gpuMetrics": status_payload.get("gpuMetrics") or [],
             "unslothActive": status_payload.get("unslothActive"),
+            "warnings": status_payload.get("warnings") or [],
+            "ollamaRegistered": status_payload.get("ollamaRegistered"),
         },
     }
 

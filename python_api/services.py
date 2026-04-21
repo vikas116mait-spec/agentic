@@ -55,7 +55,7 @@ SUPPORTED_MODEL_PROVIDERS = {"ollama", "openai", "huggingface", "local", "groq",
 PROVIDER_LABELS = {
     "ollama": "Ollama",
     "openai": "OpenAI",
-    "huggingface": "Hugging Face Jobs",
+    "huggingface": "Hugging Face Jobs (Paid Cloud)",
     "local": "Local GPU QLoRA",
     "groq": "Groq",
     "gemini": "Google Gemini",
@@ -100,6 +100,7 @@ SEEDED_GATED_PROFILE_MODELS = {
     "profile-hf-gemma-2b": "google/gemma-2-2b-it",
 }
 SEEDED_DEFAULT_PROFILE_IDS = {"profile-open-source-sft", "profile-local-qlora"}
+LEGACY_FREE_TUNING_DEFAULT_PROFILE_IDS = {"profile-large", "profile-open-source-sft"}
 LEGACY_PAID_SEEDED_PROFILES = {
     "profile-large": ("openai", DEFAULT_OPENAI_BASE_MODEL),
     "profile-thinking": ("openai", "gpt-5.4-mini"),
@@ -112,6 +113,21 @@ def _slugify_archive_name(value: str) -> str:
     while "--" in cleaned:
         cleaned = cleaned.replace("--", "-")
     return cleaned.strip("-") or "model"
+
+
+def _ollama_model_family_slug(model_id: str) -> str:
+    family = (model_id or "").split("/")[-1]
+    for suffix in ("-Instruct", "-instruct", "-IT", "-it", "-Chat", "-chat"):
+        if family.endswith(suffix):
+            family = family[: -len(suffix)]
+            break
+    return _slugify_archive_name(family)[:24]
+
+
+def _default_local_ollama_model_name(dataset_name: str, base_model: str, job_id: str) -> str:
+    dataset_slug = _slugify_archive_name(dataset_name)[:32]
+    model_slug = _ollama_model_family_slug(base_model)
+    return "-".join(part for part in (dataset_slug, model_slug, job_id[:8]) if part)
 
 
 def _latest_path_mtime(path: Path) -> float:
@@ -362,7 +378,7 @@ def provider_status_payload(provider: str | None = None) -> dict[str, Any]:
         "supportsFineTuning": provider_supports_fine_tuning(resolved),
         "managedFineTuningAvailable": provider_is_configured("openai"),
         "providers": [
-            provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"), provider_payload("local"),
+            provider_payload("local"), provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"),
             provider_payload("groq"), provider_payload("gemini"), provider_payload("cerebras"), provider_payload("together"),
         ],
         "defaultBaseModel": DEFAULT_BASE_MODEL,
@@ -378,7 +394,7 @@ def ensure_fine_tuning_available(provider: str | None = None) -> None:
         "FINE_TUNING_UNSUPPORTED",
         (
             f"Fine-tuning is not available for {get_provider_display_name(resolved)} profiles yet. "
-            "Use OpenAI for managed fine-tuning, Hugging Face Jobs for cloud SFT training, or Local GPU QLoRA to use your own hardware. "
+            "Use Local GPU QLoRA for the free on-device path, OpenAI for managed fine-tuning, or Hugging Face Jobs for paid cloud SFT training. "
             "Groq, Gemini, Cerebras, and Together AI are inference-only."
         ),
         400,
@@ -467,7 +483,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "huggingface",
             "model": huggingface_base_model,
             "category": "large",
-            "description": "Cloud fine-tuning for open-source models through Hugging Face Jobs.",
+            "description": "Paid cloud fine-tuning for open-source models through Hugging Face Jobs.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -477,7 +493,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "local",
             "model": local_base_model,
             "category": "large",
-            "description": "Fine-tune open-source models on your own GPU and save LoRA adapters locally.",
+            "description": "Recommended free fine-tuning path: train on your own GPU, save adapters locally, and export to GGUF for Ollama.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -487,7 +503,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "local",
             "model": "Qwen/Qwen2.5-0.5B-Instruct",
             "category": "small",
-            "description": "Tiny local smoke-test fine-tune that is great for pipeline validation.",
+            "description": "Low-VRAM fallback for pipeline validation when 3B is too heavy.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -497,7 +513,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "local",
             "model": "Qwen/Qwen2.5-1.5B-Instruct",
             "category": "medium",
-            "description": "Fast local fine-tune with a little more quality than the 0.5B starter.",
+            "description": "Mid-range local fallback when you want lower VRAM than the recommended 3B profile.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -527,7 +543,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "huggingface",
             "model": "Qwen/Qwen2.5-1.5B-Instruct",
             "category": "medium",
-            "description": "Small open-source cloud fine-tune through Hugging Face Jobs.",
+            "description": "Paid cloud fine-tune on Hugging Face Jobs when you do not want to use your own GPU.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -537,7 +553,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "huggingface",
             "model": "microsoft/Phi-3.5-mini-instruct",
             "category": "medium",
-            "description": "Cloud fine-tune with Phi 3.5 Mini through Hugging Face Jobs.",
+            "description": "Paid cloud fine-tune with Phi 3.5 Mini through Hugging Face Jobs.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -547,7 +563,7 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "provider": "huggingface",
             "model": "mistralai/Mistral-7B-Instruct-v0.3",
             "category": "large",
-            "description": "Mistral cloud fine-tune when you want a stronger open-source base model.",
+            "description": "Paid cloud Mistral fine-tune when you want a stronger open-source base model.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -709,7 +725,7 @@ def _model_profiles_payload(state: dict[str, Any]) -> dict[str, Any]:
         "profiles": sort_desc(profiles),
         "defaults": defaults,
         "providers": [
-            provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"), provider_payload("local"),
+            provider_payload("local"), provider_payload("ollama"), provider_payload("openai"), provider_payload("huggingface"),
             provider_payload("groq"), provider_payload("gemini"), provider_payload("cerebras"), provider_payload("together"),
         ],
     }
@@ -754,6 +770,8 @@ def _ensure_model_profiles_initialized(state: dict[str, Any]) -> None:
             continue
         if value is None:
             sanitized_defaults[key] = value
+            continue
+        if key == "jobBaseProfileId" and value in LEGACY_FREE_TUNING_DEFAULT_PROFILE_IDS and fallback_defaults.get("jobBaseProfileId"):
             continue
         if value not in valid_ids:
             continue
@@ -1293,6 +1311,9 @@ def create_job_record(
 
     if model_provider == "local":
         job_id = uuid4().hex
+        resolved_ollama_model_name = (ollama_model_name or "").strip()
+        if push_to_ollama and not resolved_ollama_model_name:
+            resolved_ollama_model_name = _default_local_ollama_model_name(dataset["name"], base_model, job_id)
         config = _build_local_training_job_config(
             job_id=job_id,
             dataset=dataset,
@@ -1301,13 +1322,17 @@ def create_job_record(
             export_gguf=export_gguf,
             gguf_quantization=gguf_quantization,
             push_to_ollama=push_to_ollama,
-            ollama_model_name=ollama_model_name,
+            ollama_model_name=resolved_ollama_model_name,
             num_epochs=num_epochs,
             learning_rate=learning_rate,
             per_device_batch_size=per_device_batch_size,
         )
         try:
-            runtime_summary = ensure_local_training_ready(allow_cpu_fallback=config.allow_cpu_fallback)
+            runtime_summary = ensure_local_training_ready(
+                allow_cpu_fallback=config.allow_cpu_fallback,
+                export_gguf=config.export_gguf,
+                push_to_ollama=config.push_to_ollama,
+            )
         except RuntimeError as error:
             raise ApiError("MODEL_PROVIDER_NOT_CONFIGURED", str(error), 400) from error
         submission = spawn_local_training_job(config, runtime_summary)
@@ -1347,7 +1372,7 @@ def create_job_record(
             "localMetricsPath": config.metrics_path,
             "localArtifactsPath": config.model_output_path,
             "progressJson": submission["progressJson"],
-            "ollamaModelName": ollama_model_name or None,
+            "ollamaModelName": resolved_ollama_model_name or None,
         }
 
         def mutator(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:

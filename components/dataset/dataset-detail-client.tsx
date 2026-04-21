@@ -108,8 +108,9 @@ export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
         )}
         {runtime?.managedFineTuningAvailable === false && (
           <p className="text-xs text-black/45">
-            Add an <code>OPENAI_API_KEY</code> for managed fine-tuning, or set <code>HF_TOKEN</code> for Hugging Face
-            Jobs. Local GPU QLoRA profiles can use your own machine, and Ollama profiles can still be used in
+            Add an <code>OPENAI_API_KEY</code> for managed fine-tuning, or set <code>HF_TOKEN</code> for the paid
+            Hugging Face Jobs path. For the recommended free setup, keep <code>LOCAL_TRAINING_ENABLED=1</code> and
+            point <code>LOCAL_TRAINING_PYTHON</code> at your training venv. Ollama profiles can still be used in
             Playground and Agent right now.
           </p>
         )}

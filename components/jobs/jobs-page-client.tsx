@@ -121,7 +121,7 @@ export function JobsPageClient() {
     return (
       <EmptyState
         title="No jobs yet"
-        description="Upload one dataset, then start a fine-tuning run. OpenAI, Hugging Face Jobs, and Local GPU QLoRA training profiles all show up here."
+        description="Upload one dataset, then start a fine-tuning run. Local GPU QLoRA is the recommended free path; OpenAI and Hugging Face Jobs remain available as paid options."
         action={
           <div className="flex gap-3">
             <Link href="/datasets/new">
