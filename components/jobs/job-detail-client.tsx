@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { JobEventList } from "@/components/jobs/job-event-list";
 import { LossChart } from "@/components/jobs/loss-chart";
@@ -10,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { LoadingState } from "@/components/ui/loading-state";
+import { getLocalTrainingPreset } from "@/lib/local-training";
 import { getPythonApiBaseUrl, pythonApiFetch } from "@/lib/python-api";
 import { formatDate, formatDuration, formatNumber } from "@/lib/utils";
 
@@ -29,6 +31,14 @@ type JobProgressSnapshot = {
     multiGpu?: boolean | null;
     selectedGpu?: number | string | null;
     selectedGpuFreeMb?: number | null;
+    speedPreset?: string | null;
+    datasetNumProc?: number | null;
+    dataloaderWorkers?: number | null;
+    maxSeqLength?: number | null;
+    gradientAccumulationSteps?: number | null;
+    ollamaHost?: string | null;
+    ollamaReachable?: boolean | null;
+    ollamaCliAvailable?: boolean | null;
   } | null;
   datasetStats: {
     totalRecords?: number | null;
@@ -89,12 +99,14 @@ type JobDetail = {
   datasetRepoUrl: string | null;
   trackioUrl: string | null;
   trainingBackend: string | null;
+  trainingPreset: string | null;
   trainedTokens: number | null;
   ollamaModelName: string | null;
   lastSyncedAt: string | null;
   progressJson: JobProgressSnapshot | null;
   resultFilesJson: ResultFile[] | null;
   dataset: {
+    id: string;
     name: string;
   } | null;
   createdAt: string;
@@ -263,9 +275,19 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
   const currentStage = stageLabel(job.progressJson?.stage);
   const stageDescription = job.statusMessage ?? stageSummary(job.progressJson?.stage);
   const progressWidth = progressPercent === null || progressPercent === undefined ? 6 : Math.max(6, Math.min(100, progressPercent));
+  const isCompletedLocalRun = job.status === "succeeded" && job.modelProvider === "local" && Boolean(job.fineTunedModel);
   const canDownloadLocalModel = job.modelProvider === "local" && job.status === "succeeded" && Boolean(job.fineTunedModel);
   const downloadUrl = `${getPythonApiBaseUrl()}/jobs/${job.id}/download`;
+  const datasetDownloadUrl = job.dataset ? `${getPythonApiBaseUrl()}/datasets/${job.dataset.id}/download` : null;
   const ggufFile = job.resultFilesJson?.find((f) => f.type === "local_gguf") ?? null;
+  const speedPreset = getLocalTrainingPreset(runtimeSummary?.speedPreset ?? job.trainingPreset ?? "balanced");
+  const runtimePathLabel = unslothActive === true ? "Unsloth accelerated" : unslothActive === false ? "HuggingFace + PEFT" : "Runtime starting";
+  const runtimePathSummary =
+    unslothActive === true
+      ? "Fastest local path with lower VRAM use and built-in GGUF export support."
+      : unslothActive === false
+        ? "Standard local QLoRA path. Install Unsloth for faster runs and easier GGUF export."
+        : "The trainer has not reported its model-loading path yet.";
 
   return (
     <div className="space-y-6">
@@ -352,11 +374,13 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
               <div className="mt-4 grid grid-cols-2 gap-2">
                 {[
                   { label: "Backend", value: job.trainingBackend ?? job.modelProviderLabel },
+                  { label: "Preset", value: speedPreset.label },
                   { label: "GPUs", value: formatNumber(runtimeSummary?.gpuCount ?? progress?.gpuCount) },
                   { label: "Device", value: String(runtimeSummary?.selectedGpu ?? "--") },
                   { label: "Mode", value: runtimeSummary?.multiGpu ? "Multi-GPU" : "Single GPU" },
                   { label: "Batch", value: `${formatNumber(progress?.perDeviceTrainBatchSize)} × ${formatNumber(progress?.gradientAccumulationSteps)} acc` },
                   { label: "Free memory", value: `${formatNumber(runtimeSummary?.selectedGpuFreeMb)} MB` },
+                  { label: "Context", value: `${formatNumber(runtimeSummary?.maxSeqLength)} tokens` },
                 ].map(({ label, value }) => (
                   <div key={label} className="rounded-xl bg-muted/60 px-2.5 py-2">
                     <p className="text-[10px] text-black/40 leading-tight">{label}</p>
@@ -381,6 +405,30 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
                 ))}
               </div>
             </div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-[1.5rem] bg-white p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Speed profile</p>
+            <p className="mt-2 text-lg font-semibold text-black/85">{speedPreset.shortLabel}</p>
+            <p className="mt-2 text-sm text-black/60">{speedPreset.description}</p>
+          </div>
+          <div className="rounded-[1.5rem] bg-white p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Runtime path</p>
+            <p className="mt-2 text-lg font-semibold text-black/85">{runtimePathLabel}</p>
+            <p className="mt-2 text-sm text-black/60">{runtimePathSummary}</p>
+          </div>
+          <div className="rounded-[1.5rem] bg-white p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Data pipeline</p>
+            <p className="mt-2 text-sm text-black/80">
+              {formatNumber(runtimeSummary?.datasetNumProc)} token workers · {formatNumber(runtimeSummary?.dataloaderWorkers)} loader workers
+            </p>
+            <p className="mt-2 text-sm text-black/60">
+              {runtimeSummary?.ollamaHost
+                ? `Ollama host ${runtimeSummary.ollamaHost} is ${runtimeSummary.ollamaReachable ? "reachable" : "not reachable"} for export and registration.`
+                : "Ollama host will be checked when export or registration is needed."}
+            </p>
           </div>
         </div>
 
@@ -528,6 +576,16 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
         </div>
 
         <div className="flex flex-wrap gap-3">
+          {job.dataset?.id ? (
+            <Link href={`/datasets/${job.dataset.id}`}>
+              <Button variant="secondary">View dataset</Button>
+            </Link>
+          ) : null}
+          {datasetDownloadUrl ? (
+            <Button variant="secondary" onClick={() => window.location.assign(datasetDownloadUrl)}>
+              Download dataset
+            </Button>
+          ) : null}
           {canDownloadLocalModel ? (
             <Button variant="secondary" onClick={() => window.location.assign(downloadUrl)}>
               Download adapter
@@ -554,6 +612,66 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
           </p>
         ) : null}
       </Card>
+
+      {isCompletedLocalRun ? (
+        <Card className="space-y-5 border-brand/20 bg-brand/5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-black/45">Ready To Download</p>
+              <p className="mt-2 font-display text-3xl text-black/90">Your fine-tuned model is ready</p>
+              <p className="mt-2 text-sm text-black/65">
+                Download the model files from this screen, keep the dataset with the run, or open the model in the test panel below.
+              </p>
+            </div>
+            <StatusBadge value={job.status} />
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl bg-white/90 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-black/45">Model package</p>
+              <p className="mt-2 text-sm text-black/80">
+                Download the trained adapter bundle with tokenizer, metrics, and run metadata.
+              </p>
+            </div>
+            <div className="rounded-2xl bg-white/90 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-black/45">GGUF export</p>
+              <p className="mt-2 text-sm text-black/80">
+                {ggufFile ? "Ready for Ollama or llama.cpp." : "Not available for this run."}
+              </p>
+            </div>
+            <div className="rounded-2xl bg-white/90 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-black/45">Ollama name</p>
+              <p className="mt-2 break-all text-sm text-black/80">{job.ollamaModelName ?? "Not registered automatically"}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <Button onClick={() => window.location.assign(downloadUrl)}>
+              Download model files
+            </Button>
+            {ggufFile ? (
+              <Button
+                variant="secondary"
+                onClick={() => window.location.assign(`${getPythonApiBaseUrl()}/jobs/${job.id}/download?type=gguf`)}
+              >
+                Download GGUF model
+              </Button>
+            ) : null}
+            {datasetDownloadUrl ? (
+              <Button variant="ghost" onClick={() => window.location.assign(datasetDownloadUrl)}>
+                Download training dataset
+              </Button>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl bg-white/90 p-4 text-sm text-black/70">
+            <p className="font-medium text-black/85">Next steps</p>
+            <p className="mt-2">1. Download the adapter bundle if you want to keep the trained files outside this workspace.</p>
+            <p className="mt-1">2. Download the GGUF if you want the easiest local model file for Ollama or `llama.cpp`.</p>
+            <p className="mt-1">3. Use the chat panel below to test the model before sharing or exporting it.</p>
+          </div>
+        </Card>
+      ) : null}
 
       {job.status === "succeeded" && job.fineTunedModel ? (
         <Card className="space-y-5 bg-white/88">

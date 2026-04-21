@@ -142,6 +142,14 @@ def _recommended_dataset_num_proc(train_records: int, eval_records: int) -> int:
     return min(8, cpu_count, largest_split)
 
 
+def _recommended_dataloader_workers(train_records: int, eval_records: int) -> int:
+    cpu_count = os.cpu_count() or 1
+    largest_split = max(train_records, eval_records, 1)
+    if largest_split < 256 or cpu_count < 4:
+        return 0
+    return min(2, max(cpu_count - 1, 0))
+
+
 def _build_sft_config_kwargs(
     config: LocalQLoraJobConfig,
     torch_module: Any,
@@ -154,6 +162,7 @@ def _build_sft_config_kwargs(
     gpu_available = local_gpu_count() > 0
     bf16_enabled = gpu_available and bool(getattr(torch_module.cuda, "is_bf16_supported", lambda: False)())
     dataset_num_proc = _recommended_dataset_num_proc(train_records, eval_records)
+    dataloader_workers = _recommended_dataloader_workers(train_records, eval_records)
 
     kwargs: dict[str, Any] = {
         "output_dir": config.output_dir,
@@ -173,7 +182,7 @@ def _build_sft_config_kwargs(
         "run_name": f"local-qlora-{config.job_id[:8]}",
         "max_length": int(hyperparameters["max_seq_length"]),
         "dataset_num_proc": dataset_num_proc,
-        "dataloader_num_workers": 0,
+        "dataloader_num_workers": dataloader_workers,
     }
 
     if bf16_enabled:
@@ -293,6 +302,15 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                     "runtimePython": sys.executable,
                     "multiGpu": False,
                     "selectedGpu": (os.environ.get("LOCAL_TRAINING_SELECTED_GPU") or None),
+                    "speedPreset": config.training_preset,
+                    "datasetNumProc": _recommended_dataset_num_proc(
+                        int(dataset_stats["trainRecords"]), int(dataset_stats["evalRecords"])
+                    ),
+                    "dataloaderWorkers": _recommended_dataloader_workers(
+                        int(dataset_stats["trainRecords"]), int(dataset_stats["evalRecords"])
+                    ),
+                    "maxSeqLength": int(config.resolved_hyperparameters()["max_seq_length"]),
+                    "gradientAccumulationSteps": int(config.resolved_hyperparameters()["gradient_accumulation_steps"]),
                 },
             },
         )

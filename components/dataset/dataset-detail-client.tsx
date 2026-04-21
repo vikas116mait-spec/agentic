@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { LoadingState } from "@/components/ui/loading-state";
-import { pythonApiFetch } from "@/lib/python-api";
+import { getPythonApiBaseUrl, pythonApiFetch } from "@/lib/python-api";
 import { formatBytes, formatDate } from "@/lib/utils";
 import type { DatasetValidationSummary } from "@/lib/types";
 
@@ -68,6 +68,7 @@ export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
 
   const isValid = dataset.validationStatus === "VALID";
   const canUploadToOpenAI = isValid && runtime?.managedFineTuningAvailable !== false && !dataset.openaiFileId;
+  const datasetDownloadUrl = `${getPythonApiBaseUrl()}/datasets/${dataset.id}/download`;
 
   return (
     <div className="space-y-6">
@@ -83,22 +84,27 @@ export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
           <StatusBadge value={dataset.validationStatus} />
         </div>
 
-        {isValid ? (
-          <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-3">
+          {isValid ? (
             <Link href={`/jobs/new?datasetId=${dataset.id}`}>
               <Button>Start fine-tuning job</Button>
             </Link>
-            {canUploadToOpenAI && (
-              <Button variant="ghost" onClick={handleUploadToOpenAI} disabled={uploading}>
-                {uploading ? "Uploading..." : "Pre-upload to OpenAI"}
-              </Button>
-            )}
-          </div>
-        ) : (
+          ) : null}
+          <Button variant="secondary" onClick={() => window.location.assign(datasetDownloadUrl)}>
+            Download dataset
+          </Button>
+          {canUploadToOpenAI && (
+            <Button variant="ghost" onClick={handleUploadToOpenAI} disabled={uploading}>
+              {uploading ? "Uploading..." : "Pre-upload to OpenAI"}
+            </Button>
+          )}
+        </div>
+
+        {!isValid ? (
           <p className="rounded-2xl bg-danger/10 p-4 text-sm text-danger">
             Fix the errors below before this dataset can be used for training.
           </p>
-        )}
+        ) : null}
 
         {dataset.openaiFileId && (
           <p className="text-xs text-black/45">OpenAI file: {dataset.openaiFileId}</p>

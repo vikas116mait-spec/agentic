@@ -160,6 +160,55 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
 
             callback.on_epoch_begin(None, None, None)
 
+    def test_fast_preset_uses_shorter_defaults(self) -> None:
+        config = LocalQLoraJobConfig(
+            job_id="job-fast",
+            dataset_id="dataset-1",
+            dataset_name="demo-dataset",
+            dataset_path="/tmp/dataset.jsonl",
+            base_model="Qwen/Qwen2.5-1.5B-Instruct",
+            working_dir="/tmp/job-fast",
+            output_dir="/tmp/job-fast/artifacts",
+            model_output_path="/tmp/job-fast/artifacts/adapter",
+            config_path="/tmp/job-fast/local_train_config.json",
+            status_path="/tmp/job-fast/local_train_status.json",
+            events_path="/tmp/job-fast/local_train_events.jsonl",
+            log_path="/tmp/job-fast/local_train.log",
+            metrics_path="/tmp/job-fast/local_train_metrics.json",
+            training_preset="fast",
+        )
+
+        resolved = config.resolved_hyperparameters()
+
+        self.assertEqual(resolved["num_train_epochs"], 1)
+        self.assertEqual(resolved["gradient_accumulation_steps"], 2)
+        self.assertEqual(resolved["max_seq_length"], 768)
+
+    def test_quality_preset_still_allows_manual_override(self) -> None:
+        config = LocalQLoraJobConfig(
+            job_id="job-quality",
+            dataset_id="dataset-1",
+            dataset_name="demo-dataset",
+            dataset_path="/tmp/dataset.jsonl",
+            base_model="Qwen/Qwen2.5-3B-Instruct",
+            working_dir="/tmp/job-quality",
+            output_dir="/tmp/job-quality/artifacts",
+            model_output_path="/tmp/job-quality/artifacts/adapter",
+            config_path="/tmp/job-quality/local_train_config.json",
+            status_path="/tmp/job-quality/local_train_status.json",
+            events_path="/tmp/job-quality/local_train_events.jsonl",
+            log_path="/tmp/job-quality/local_train.log",
+            metrics_path="/tmp/job-quality/local_train_metrics.json",
+            training_preset="quality",
+            hyperparameters={"learning_rate": 5e-5},
+        )
+
+        resolved = config.resolved_hyperparameters()
+
+        self.assertEqual(resolved["per_device_train_batch_size"], 1)
+        self.assertEqual(resolved["gradient_accumulation_steps"], 8)
+        self.assertEqual(resolved["learning_rate"], 5e-5)
+
 
 class LocalTrainingWarningsTests(unittest.TestCase):
     def make_config(self, temp_dir: str, *, push_to_ollama: bool = True) -> LocalQLoraJobConfig:

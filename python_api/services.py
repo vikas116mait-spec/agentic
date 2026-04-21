@@ -25,6 +25,7 @@ from python_api.local_qlora import (
     cancel_local_training_job,
     collect_local_training_events,
     ensure_local_training_ready,
+    inspect_local_training_runtime,
     inspect_local_training_job,
     local_training_provider_is_configured,
     spawn_local_training_job,
@@ -154,6 +155,23 @@ def _resolve_local_job_path(raw_path: str | None) -> Path:
 
     if not resolved.exists():
         raise ApiError("NOT_FOUND", "Requested local training artifact was not found on disk.", 404)
+
+    return resolved
+
+
+def _resolve_dataset_path(raw_path: str | None) -> Path:
+    if not raw_path:
+        raise ApiError("NOT_FOUND", "Dataset file path is missing.", 404)
+
+    resolved = Path(raw_path).resolve()
+    datasets_root = (ROOT / "uploads_python" / "datasets").resolve()
+    try:
+        resolved.relative_to(datasets_root)
+    except ValueError as error:
+        raise ApiError("FORBIDDEN", "Requested dataset path is outside the datasets directory.", 403) from error
+
+    if not resolved.exists() or not resolved.is_file():
+        raise ApiError("NOT_FOUND", "Requested dataset file was not found on disk.", 404)
 
     return resolved
 
@@ -386,6 +404,10 @@ def provider_status_payload(provider: str | None = None) -> dict[str, Any]:
     }
 
 
+def local_training_runtime_payload() -> dict[str, Any]:
+    return inspect_local_training_runtime()
+
+
 def ensure_fine_tuning_available(provider: str | None = None) -> None:
     resolved = get_model_provider(provider)
     if provider_supports_fine_tuning(resolved):
@@ -474,6 +496,36 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "model": ollama_thinking_model,
             "category": "thinking",
             "description": "Reasoning-heavy free local model that is auto-pulled on first use.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-ollama-llama32-3b",
+            "name": "Llama 3.2 3B",
+            "provider": "ollama",
+            "model": "llama3.2:3b",
+            "category": "small",
+            "description": "Very fast free Ollama model for laptops and quick local evaluation loops.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-ollama-gemma3-4b",
+            "name": "Gemma 3 4B",
+            "provider": "ollama",
+            "model": "gemma3:4b",
+            "category": "medium",
+            "description": "Compact Google model with strong quality-per-size for free local inference.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
+            "id": "profile-ollama-qwen25-7b",
+            "name": "Qwen 2.5 7B",
+            "provider": "ollama",
+            "model": "qwen2.5:7b",
+            "category": "large",
+            "description": "Stronger free local fallback when you want a different model family than Qwen 3 or Llama.",
             "createdAt": now,
             "updatedAt": now,
         },
@@ -1168,6 +1220,19 @@ def retrieve_dataset_detail(dataset_id: str) -> dict[str, Any]:
     return deepcopy(dataset)
 
 
+def build_dataset_download_package(dataset_id: str) -> dict[str, str]:
+    dataset = retrieve_dataset_detail(dataset_id)
+    dataset_path = _resolve_dataset_path(dataset.get("storagePath"))
+    filename = dataset.get("originalFilename") or dataset_path.name or f"{dataset_id}.jsonl"
+    if not filename.endswith(".jsonl"):
+        filename = f"{filename}.jsonl"
+    return {
+        "path": str(dataset_path),
+        "filename": filename,
+        "mediaType": "application/x-ndjson",
+    }
+
+
 def upload_dataset_record_to_openai(dataset_id: str) -> dict[str, Any]:
     dataset = retrieve_dataset_detail(dataset_id)
     if dataset["validationStatus"] != "VALID":
@@ -1220,6 +1285,7 @@ def _build_local_training_job_config(
     dataset: dict[str, Any],
     base_model: str,
     hyperparameters: dict[str, Any] | None = None,
+    training_preset: str | None = "balanced",
     export_gguf: bool = True,
     gguf_quantization: str = "q4_k_m",
     push_to_ollama: bool = False,
@@ -1260,6 +1326,7 @@ def _build_local_training_job_config(
         gguf_quantization=gguf_quantization,
         push_to_ollama=push_to_ollama,
         ollama_model_name=ollama_model_name,
+        training_preset=training_preset or "balanced",
     )
 
 
@@ -1294,6 +1361,7 @@ def create_job_record(
     base_model: str,
     hyperparameters: dict[str, Any] | None = None,
     provider: str | None = None,
+    training_preset: str | None = "balanced",
     export_gguf: bool = True,
     gguf_quantization: str = "q4_k_m",
     push_to_ollama: bool = False,
@@ -1319,6 +1387,7 @@ def create_job_record(
             dataset=dataset,
             base_model=base_model,
             hyperparameters=hyperparameters,
+            training_preset=training_preset,
             export_gguf=export_gguf,
             gguf_quantization=gguf_quantization,
             push_to_ollama=push_to_ollama,
@@ -1365,6 +1434,7 @@ def create_job_record(
             "datasetRepoUrl": None,
             "trackioUrl": None,
             "trainingBackend": submission["trainingBackend"],
+            "trainingPreset": config.training_preset,
             "localConfigPath": config.config_path,
             "localStatusPath": config.status_path,
             "localEventsPath": config.events_path,
@@ -1432,6 +1502,7 @@ def create_job_record(
             "datasetRepoUrl": submission["datasetRepoUrl"],
             "trackioUrl": submission["trackioUrl"],
             "trainingBackend": submission["trainingBackend"],
+            "trainingPreset": None,
             "localConfigPath": None,
             "localStatusPath": None,
             "localEventsPath": None,
@@ -1514,6 +1585,7 @@ def create_job_record(
         "datasetRepoUrl": None,
         "trackioUrl": None,
         "trainingBackend": "openai_api",
+        "trainingPreset": None,
         "localConfigPath": None,
         "localStatusPath": None,
         "localEventsPath": None,

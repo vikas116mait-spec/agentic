@@ -34,7 +34,10 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
   ollama: [
     { value: "qwen3:8b", label: "Qwen 3 8B", hint: "Balanced local default" },
     { value: "qwen3:4b", label: "Qwen 3 4B", hint: "Fast small local model" },
+    { value: "llama3.2:3b", label: "Llama 3.2 3B", hint: "Very fast free local model for lighter machines" },
+    { value: "gemma3:4b", label: "Gemma 3 4B", hint: "Compact Google model with strong quality per size" },
     { value: "llama3.1:8b", label: "Llama 3.1 8B", hint: "General-purpose local model" },
+    { value: "qwen2.5:7b", label: "Qwen 2.5 7B", hint: "Stronger free local model for richer outputs" },
     { value: "deepseek-r1:8b", label: "DeepSeek R1 8B", hint: "Reasoning-heavy local model" }
   ],
   openai: [

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from python_api.local_qlora.config import LocalQLoraJobConfig
-from python_api.local_qlora.export import ensure_ollama_runtime_ready
+from python_api.local_qlora.export import ensure_ollama_runtime_ready, ollama_runtime_summary
 from python_api.local_qlora.model import local_training_enabled
 from python_api.local_qlora.state import append_event, read_status_file, write_status_file
 from python_api.store import ROOT, utc_now_iso
@@ -136,12 +136,69 @@ def ensure_local_training_ready(
     return summary
 
 
+def inspect_local_training_runtime() -> dict[str, Any]:
+    configured_python = configured_local_training_python()
+    python_executable = local_training_python()
+    python_exists = Path(python_executable).exists() if os.path.isabs(python_executable) else shutil.which(python_executable) is not None
+    payload: dict[str, Any] = {
+        "enabled": local_training_enabled(),
+        "configuredPython": configured_python or None,
+        "pythonExists": python_exists,
+        "providerConfigured": local_training_provider_is_configured(),
+        "runtimePython": None,
+        "gpuCount": 0,
+        "unslothAvailable": False,
+        "dependencies": {},
+        "missingDependencies": [],
+        "warnings": [],
+        "ollama": ollama_runtime_summary(),
+    }
+
+    if not payload["enabled"]:
+        payload["warnings"].append("Local GPU QLoRA is disabled. Set LOCAL_TRAINING_ENABLED=1 to enable the free local path.")
+        return payload
+
+    if not configured_python:
+        payload["warnings"].append("Set LOCAL_TRAINING_PYTHON to the Python executable inside your training venv.")
+        return payload
+
+    if not python_exists:
+        payload["warnings"].append(f"LOCAL_TRAINING_PYTHON points to `{python_executable}`, but that executable was not found.")
+        return payload
+
+    try:
+        runtime = _probe_training_runtime()
+    except RuntimeError as error:
+        payload["warnings"].append(str(error))
+        return payload
+
+    payload["runtimePython"] = runtime.get("python")
+    payload["gpuCount"] = int(runtime.get("gpuCount") or 0)
+    payload["unslothAvailable"] = bool(runtime.get("unslothAvailable"))
+    payload["dependencies"] = runtime.get("dependencies") or {}
+    payload["missingDependencies"] = sorted(
+        name for name, available in payload["dependencies"].items() if not available
+    )
+
+    if payload["gpuCount"] == 0:
+        payload["warnings"].append("No CUDA-visible GPU was detected for the training runtime.")
+    if payload["missingDependencies"]:
+        payload["warnings"].append(
+            "Missing local training dependencies: " + ", ".join(payload["missingDependencies"])
+        )
+    if not payload["unslothAvailable"]:
+        payload["warnings"].append("Unsloth is not installed, so local training will use the slower HuggingFace + PEFT path.")
+
+    return payload
+
+
 def _runtime_summary_payload(
     runtime: dict[str, Any],
     *,
     gpu_count: int,
     use_multi_gpu: bool,
     selected_gpu: dict[str, int | str] | None,
+    config: LocalQLoraJobConfig,
 ) -> dict[str, Any]:
     ollama_summary = runtime.get("ollama") or {}
     return {
@@ -151,8 +208,13 @@ def _runtime_summary_payload(
         "selectedGpu": selected_gpu["index"] if selected_gpu else None,
         "selectedGpuFreeMb": selected_gpu["memoryFreeMb"] if selected_gpu else None,
         "unslothAvailable": runtime.get("unslothAvailable"),
+        "speedPreset": config.training_preset,
+        "maxSeqLength": int(config.resolved_hyperparameters()["max_seq_length"]),
+        "gradientAccumulationSteps": int(config.resolved_hyperparameters()["gradient_accumulation_steps"]),
         "warnings": runtime.get("warnings") or [],
         "ollamaHost": ollama_summary.get("host"),
+        "ollamaReachable": ollama_summary.get("reachable"),
+        "ollamaCliAvailable": ollama_summary.get("cliAvailable"),
     }
 
 
@@ -348,6 +410,7 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         gpu_count=gpu_count,
         use_multi_gpu=use_multi_gpu,
         selected_gpu=selected_gpu,
+        config=config,
     )
 
     initial_status = {
