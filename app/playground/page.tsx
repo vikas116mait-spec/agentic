@@ -83,8 +83,9 @@ export default function PlaygroundPage() {
           <p className="text-xs uppercase tracking-[0.2em] text-black/45">Profile-driven playground</p>
           <p className="font-display text-3xl">Playground</p>
           <p className="mt-2 text-sm text-black/60">
-            Compare two saved model profiles side by side using the same prompt. Update the profiles in Settings when
-            your preferred small, medium, large, or thinking models change.
+            Compare two saved model profiles side by side using the same prompt. Import already fine-tuned models from
+            the Imported Models page, then update workspace defaults in Model Settings when your preferred profiles
+            change.
           </p>
         </div>
 

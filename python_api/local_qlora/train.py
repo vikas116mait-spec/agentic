@@ -13,17 +13,10 @@ from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.local_qlora.data import build_sft_datasets
 from python_api.local_qlora.evaluation import summarize_eval_metrics
 from python_api.local_qlora.model import load_quantized_model, local_gpu_count
-from python_api.local_qlora.state import append_event, write_status_file
+from python_api.local_qlora.state import append_event, read_status_file, write_status_file
 from python_api.store import utc_now_iso
 
-try:
-    from transformers import TrainerCallback
-except ImportError:  # pragma: no cover
-    class TrainerCallback:  # type: ignore[too-many-ancestors]
-        pass
-
-
-class LocalProgressCallback(TrainerCallback):
+class LocalProgressCallback:
     def __init__(self, *, config: LocalQLoraJobConfig, status_path: Path, gpu_count: int) -> None:
         self.config = config
         self.status_path = status_path
@@ -31,6 +24,13 @@ class LocalProgressCallback(TrainerCallback):
         self.started_at = time.monotonic()
         self.last_progress: dict[str, Any] = {}
         self.loss_history: list[dict[str, Any]] = []
+
+    # Trainer integrations may call additional `on_*` hooks depending on the
+    # installed transformers/trl versions. We only override the ones we need.
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("on_"):
+            return lambda *args, **kwargs: None
+        raise AttributeError(name)
 
     def _progress_payload(self, state: Any, logs: dict[str, Any] | None = None) -> dict[str, Any]:
         hyperparameters = self.config.resolved_hyperparameters()
@@ -132,10 +132,37 @@ class LocalProgressCallback(TrainerCallback):
         )
 
 
-def _build_sft_config_kwargs(config: LocalQLoraJobConfig, torch_module: Any, has_eval: bool) -> dict[str, Any]:
+def _recommended_dataset_num_proc(train_records: int, eval_records: int) -> int:
+    cpu_count = os.cpu_count() or 1
+    largest_split = max(train_records, eval_records, 1)
+    if largest_split < 128:
+        return 1
+    if largest_split < 512:
+        return min(2, cpu_count)
+    return min(8, cpu_count, largest_split)
+
+
+def _recommended_dataloader_workers(train_records: int, eval_records: int) -> int:
+    cpu_count = os.cpu_count() or 1
+    largest_split = max(train_records, eval_records, 1)
+    if largest_split < 256 or cpu_count < 4:
+        return 0
+    return min(2, max(cpu_count - 1, 0))
+
+
+def _build_sft_config_kwargs(
+    config: LocalQLoraJobConfig,
+    torch_module: Any,
+    has_eval: bool,
+    *,
+    train_records: int,
+    eval_records: int,
+) -> dict[str, Any]:
     hyperparameters = config.resolved_hyperparameters()
     gpu_available = local_gpu_count() > 0
     bf16_enabled = gpu_available and bool(getattr(torch_module.cuda, "is_bf16_supported", lambda: False)())
+    dataset_num_proc = _recommended_dataset_num_proc(train_records, eval_records)
+    dataloader_workers = _recommended_dataloader_workers(train_records, eval_records)
 
     kwargs: dict[str, Any] = {
         "output_dir": config.output_dir,
@@ -154,6 +181,8 @@ def _build_sft_config_kwargs(config: LocalQLoraJobConfig, torch_module: Any, has
         "report_to": "none",
         "run_name": f"local-qlora-{config.job_id[:8]}",
         "max_length": int(hyperparameters["max_seq_length"]),
+        "dataset_num_proc": dataset_num_proc,
+        "dataloader_num_workers": dataloader_workers,
     }
 
     if bf16_enabled:
@@ -232,6 +261,12 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
     metrics_path = Path(config.metrics_path)
     model_output_path = Path(config.model_output_path)
     model_output_path.mkdir(parents=True, exist_ok=True)
+    warnings = list(read_status_file(status_path).get("warnings") or [])
+
+    def record_warning(message: str, *, event_type: str) -> None:
+        warnings.append(message)
+        append_event(events_path, "warning", message, event_type=event_type)
+        write_status_file(status_path, {"warnings": warnings})
 
     append_event(events_path, "info", f"Preparing local QLoRA training for {config.base_model}.", event_type="trainer_prepare")
     write_status_file(
@@ -267,6 +302,15 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                     "runtimePython": sys.executable,
                     "multiGpu": False,
                     "selectedGpu": (os.environ.get("LOCAL_TRAINING_SELECTED_GPU") or None),
+                    "speedPreset": config.training_preset,
+                    "datasetNumProc": _recommended_dataset_num_proc(
+                        int(dataset_stats["trainRecords"]), int(dataset_stats["evalRecords"])
+                    ),
+                    "dataloaderWorkers": _recommended_dataloader_workers(
+                        int(dataset_stats["trainRecords"]), int(dataset_stats["evalRecords"])
+                    ),
+                    "maxSeqLength": int(config.resolved_hyperparameters()["max_seq_length"]),
+                    "gradientAccumulationSteps": int(config.resolved_hyperparameters()["gradient_accumulation_steps"]),
                 },
             },
         )
@@ -282,7 +326,13 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
         write_status_file(status_path, {"unslothActive": unsloth_active})
 
         training_args = _instantiate_sft_config(
-            _build_sft_config_kwargs(config=config, torch_module=torch_module, has_eval=eval_dataset is not None)
+            _build_sft_config_kwargs(
+                config=config,
+                torch_module=torch_module,
+                has_eval=eval_dataset is not None,
+                train_records=int(dataset_stats["trainRecords"]),
+                eval_records=int(dataset_stats["evalRecords"]),
+            )
         )
         trainer = _instantiate_trainer(
             model=model,
@@ -328,47 +378,67 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
 
         # ── GGUF export (only available via Unsloth) ──────────────────────────
         gguf_path: str | None = None
+        modelfile_path: str | None = None
+        ollama_registered = False
         if config.export_gguf:
-            try:
-                from python_api.local_qlora.export import export_gguf, push_to_ollama
-
-                write_status_file(
-                    status_path,
-                    {
-                        "stage": "exporting",
-                        "statusMessage": f"Exporting GGUF ({config.gguf_quantization}). This may take a few minutes.",
-                    },
+            if not unsloth_active:
+                warning_message = (
+                    "GGUF export was skipped because Unsloth is not installed in LOCAL_TRAINING_PYTHON."
+                    if not config.push_to_ollama
+                    else "GGUF export and Ollama registration were skipped because Unsloth is not installed in LOCAL_TRAINING_PYTHON."
                 )
-                append_event(
-                    events_path,
-                    "info",
-                    f"Exporting to GGUF format ({config.gguf_quantization}).",
-                    event_type="gguf_export_started",
-                )
-                gguf_path = export_gguf(trainer.model, tokenizer, model_output_path, config.gguf_quantization)
-                append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
+                record_warning(warning_message, event_type="gguf_export_skipped")
+            else:
+                try:
+                    from python_api.local_qlora.export import export_gguf, push_to_ollama, write_ollama_modelfile
 
-                if config.push_to_ollama and config.ollama_model_name:
+                    write_status_file(
+                        status_path,
+                        {
+                            "stage": "exporting",
+                            "statusMessage": f"Exporting GGUF ({config.gguf_quantization}). This may take a few minutes.",
+                        },
+                    )
                     append_event(
                         events_path,
                         "info",
-                        f"Pushing to Ollama as '{config.ollama_model_name}'.",
-                        event_type="ollama_push_started",
+                        f"Exporting to GGUF format ({config.gguf_quantization}).",
+                        event_type="gguf_export_started",
                     )
-                    push_to_ollama(gguf_path, config.ollama_model_name)
-                    append_event(
-                        events_path,
-                        "info",
-                        f"Model available in Ollama as '{config.ollama_model_name}'.",
-                        event_type="ollama_push_done",
+                    gguf_path = export_gguf(trainer.model, tokenizer, model_output_path, config.gguf_quantization)
+                    modelfile_path = write_ollama_modelfile(gguf_path)
+                    append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
+
+                    if config.push_to_ollama and config.ollama_model_name:
+                        append_event(
+                            events_path,
+                            "info",
+                            f"Pushing to Ollama as '{config.ollama_model_name}'.",
+                            event_type="ollama_push_started",
+                        )
+                        try:
+                            push_to_ollama(gguf_path, config.ollama_model_name)
+                            ollama_registered = True
+                            append_event(
+                                events_path,
+                                "info",
+                                f"Model available in Ollama as '{config.ollama_model_name}'.",
+                                event_type="ollama_push_done",
+                            )
+                        except Exception as ollama_error:
+                            recovery_command = f"ollama create {config.ollama_model_name} -f {modelfile_path}"
+                            record_warning(
+                                (
+                                    f"GGUF export succeeded, but Ollama registration failed for '{config.ollama_model_name}': "
+                                    f"{ollama_error}. Start Ollama, then run `{recovery_command}`."
+                                ),
+                                event_type="ollama_push_failed",
+                            )
+                except Exception as export_error:
+                    record_warning(
+                        f"GGUF export failed (adapter is still saved): {export_error}",
+                        event_type="gguf_export_failed",
                     )
-            except Exception as export_error:
-                append_event(
-                    events_path,
-                    "warning",
-                    f"GGUF export failed (adapter is still saved): {export_error}",
-                    event_type="gguf_export_failed",
-                )
 
         metrics_payload = {
             "train": train_metrics,
@@ -383,17 +453,24 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
             f"Local QLoRA training completed. Adapter saved to {config.model_output_path}.",
             event_type="training_succeeded",
         )
+        final_status_message = (
+            "Local GPU QLoRA training finished successfully."
+            if not warnings
+            else f"Local GPU QLoRA training finished with warnings. {warnings[0]}"
+        )
         write_status_file(
             status_path,
             {
                 "status": "succeeded",
                 "stage": "succeeded",
-                "statusMessage": "Local GPU QLoRA training finished successfully.",
+                "statusMessage": final_status_message,
                 "finishedAt": utc_now_iso(),
                 "fineTunedModel": config.model_output_path,
                 "modelOutputPath": config.model_output_path,
                 "metricsPath": str(metrics_path),
                 "trainedTokens": train_metrics.get("train_num_tokens"),
+                "warnings": warnings,
+                "ollamaRegistered": ollama_registered,
                 "progress": {
                     "percent": 100,
                     "currentStep": train_metrics.get("global_step"),
@@ -416,6 +493,7 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                     {"type": "local_metrics", "path": str(metrics_path)},
                     {"type": "local_log", "path": config.log_path},
                     *([{"type": "local_gguf", "path": gguf_path}] if gguf_path else []),
+                    *([{"type": "local_modelfile", "path": modelfile_path}] if modelfile_path else []),
                 ],
                 "metrics": metrics_payload,
                 "lossHistory": progress_cb.loss_history,

@@ -1,189 +1,220 @@
 # Agentic Fine-Tune App — Complete Project Manual
 
-> Everything you need to know about how this project works, how to set it up, how to use every feature, and how every piece of code connects together.
+This manual is the exhaustive reference for the current codebase.
+
+Use `README.md` for the fastest path to run the app.
+
+Use this file when you want the detailed explanation of:
+
+- the app architecture
+- every major page
+- the current fine-tuning flows
+- provider behavior
+- Python API endpoints
+- local training behavior
+- downloads and artifacts
+- persistence
+- testing and troubleshooting
 
 ---
 
 ## Table of Contents
 
-1. [What This Project Does](#1-what-this-project-does)
+1. [Project Summary](#1-project-summary)
 2. [Architecture Overview](#2-architecture-overview)
-3. [Directory Structure](#3-directory-structure)
-4. [Setup & Installation](#4-setup--installation)
+3. [Repository Structure](#3-repository-structure)
+4. [Setup and Installation](#4-setup-and-installation)
 5. [Environment Variables](#5-environment-variables)
 6. [Running the App](#6-running-the-app)
-7. [Pages & User Interface](#7-pages--user-interface)
+7. [Pages and User Experience](#7-pages-and-user-experience)
 8. [Core Workflows](#8-core-workflows)
 9. [Model Providers](#9-model-providers)
-10. [Python API — All Endpoints](#10-python-api--all-endpoints)
-11. [Backend Services — Key Functions](#11-backend-services--key-functions)
-12. [Agent Orchestration (Temporal)](#12-agent-orchestration-temporal)
-13. [Local QLoRA Training](#13-local-qlora-training)
-14. [Data Persistence](#14-data-persistence)
-15. [TypeScript Types & API Client](#15-typescript-types--api-client)
-16. [Frontend Components](#16-frontend-components)
-17. [Docker Deployment](#17-docker-deployment)
-18. [Using a Fine-Tuned Model After Training](#18-using-a-fine-tuned-model-after-training)
-19. [Troubleshooting](#19-troubleshooting)
-20. [Code Map — Who Calls What](#20-code-map--who-calls-what)
+10. [Local GPU QLoRA](#10-local-gpu-qlora)
+11. [Python API Endpoints](#11-python-api-endpoints)
+12. [Persistence and Artifacts](#12-persistence-and-artifacts)
+13. [TypeScript and Frontend Helpers](#13-typescript-and-frontend-helpers)
+14. [Testing](#14-testing)
+15. [Docker and Deployment](#15-docker-and-deployment)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Code Map](#17-code-map)
 
 ---
 
-## 1. What This Project Does
+## 1. Project Summary
 
-The **Agentic Fine-Tune App** is a full-stack platform for managing the complete lifecycle of fine-tuning large language models (LLMs). It is designed to work with multiple providers and supports both local (free) and cloud (paid) training.
+The **Agentic Fine-Tune App** is a full-stack application for managing the lifecycle of LLM fine-tuning and evaluation.
 
-### Core Features
+The current product supports:
 
-| Feature | What it does |
-|---------|-------------|
-| **Dataset Management** | Upload JSONL training data, validate line-by-line, preview examples |
-| **Fine-Tuning Jobs** | Submit training jobs to OpenAI, Hugging Face, or local GPU |
-| **Local QLoRA Training** | Train LoRA adapters on your own GPU — free, private, fast |
-| **Playground** | Compare base model vs. fine-tuned model responses side-by-side |
-| **Agent Orchestration** | Give the AI a goal and let it manage fine-tuning autonomously |
-| **Model Profiles** | Save named configurations for different models and providers |
-| **GGUF Export** | Convert trained models to GGUF format and push to Ollama |
+- uploading `.jsonl` datasets
+- validating records line by line
+- previewing examples
+- launching fine-tuning jobs
+- monitoring progress, events, warnings, and metrics
+- downloading datasets and trained model artifacts
+- comparing base model vs tuned model output
+- running durable agent workflows through Temporal
 
-### Who Is It For
+The app is built around a **local-first workflow**:
 
-- ML engineers who want a unified UI for fine-tuning workflows
-- Researchers who want to compare base vs. fine-tuned model outputs
-- Teams who want both local (free) and cloud training options in one tool
+- `Ollama` for free local inference
+- `Local GPU QLoRA` for free local fine-tuning
+- `OpenAI` for paid managed fine-tuning
+- `Hugging Face Jobs` for paid cloud open-source fine-tuning
+
+The active request flow is:
+
+```text
+Next.js frontend -> FastAPI backend -> provider/runtime/storage
+```
+
+The repository still contains some older Prisma and auth code, but the main app path is the Python-backed flow.
 
 ---
 
 ## 2. Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Browser (User)                        │
-│              Next.js Frontend — port 3000                │
-└──────────────────────────┬──────────────────────────────┘
-                           │ HTTP fetch
-┌──────────────────────────▼──────────────────────────────┐
-│              Python API (FastAPI) — port 8001            │
-│                    python_api/main.py                    │
-│                   python_api/services.py                 │
-└──────┬────────────┬───────────┬───────────┬─────────────┘
-       │            │           │           │
-   PostgreSQL    Ollama      OpenAI    Hugging Face
-   (state DB)  (local LLM)  (cloud)    (cloud jobs)
-       │
-  Local QLoRA
-  (GPU trainer)
-       │
-   Temporal
-  (workflow engine)
+### High-level diagram
+
+```text
+Browser / Next.js (3000)
+  -> lib/python-api.ts
+  -> FastAPI (8001)
+     -> services.py orchestration
+     -> store.py persistence
+     -> local_qlora/ local GPU runtime
+     -> Temporal worker/runtime
+     -> Ollama / OpenAI / Hugging Face Jobs / other providers
 ```
 
-### Technology Stack
+### Runtime pieces
 
-| Layer | Technology | Port |
-|-------|-----------|------|
-| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS | 3000 |
-| Backend | Python FastAPI, Uvicorn | 8001 |
-| Database | PostgreSQL 16 (with JSON file fallback) | 5432 |
-| Workflow Engine | Temporal | 7233 |
-| Local Inference | Ollama | 11434 |
-| Training | PyTorch, PEFT, TRL, Transformers | — |
+#### Frontend
+
+The frontend is responsible for:
+
+- page routing
+- form state
+- model/profile selection
+- dataset preview
+- job progress UIs
+- post-training download UX
+
+Main folders:
+
+- `app/`
+- `components/`
+- `lib/`
+
+#### Backend
+
+The backend is responsible for:
+
+- dataset validation
+- job creation and sync
+- provider selection
+- training runtime checks
+- local artifact packaging
+- agent orchestration
+- persistence
+
+Main files:
+
+- `python_api/main.py`
+- `python_api/services.py`
+- `python_api/store.py`
+- `python_api/local_qlora/*`
+- `python_api/temporal_runtime.py`
+- `python_api/agentic_workflow.py`
+
+#### Persistence
+
+The app supports two storage modes:
+
+1. PostgreSQL when `DATABASE_URL` is set and `psycopg2` is available
+2. Local JSON fallback when Postgres is not configured
+
+Artifacts such as datasets, status files, logs, and trained adapters are stored in `uploads_python/`.
 
 ---
 
-## 3. Directory Structure
+## 3. Repository Structure
 
-```
+```text
 agentic/
-│
-├── app/                          ← Next.js pages (App Router)
-│   ├── dashboard/                ← Home dashboard
-│   ├── datasets/                 ← Dataset list, upload, detail
-│   │   ├── [id]/                 ← Dataset detail page
-│   │   └── new/                  ← Upload new dataset
-│   ├── jobs/                     ← Fine-tuning jobs
-│   │   ├── [id]/                 ← Job detail + live monitoring
-│   │   └── new/                  ← Create training job
-│   ├── playground/               ← Side-by-side model comparison
-│   ├── settings/                 ← Model profiles configuration
-│   ├── agent/                    ← Autonomous agent orchestration
-│   └── (auth)/                   ← Login/signup (legacy stubs)
-│
-├── components/                   ← React UI components
-│   ├── agent/                    ← Agent page components
-│   ├── dashboard/                ← Dashboard stats, activity
-│   ├── dataset/                  ← Upload, validation, preview
-│   ├── jobs/                     ← Job form, detail, loss chart
-│   ├── playground/               ← Comparison display
-│   ├── settings/                 ← Model profiles CRUD
-│   └── ui/                       ← Button, Card, Input, etc.
-│
-├── lib/                          ← Shared utilities
-│   ├── types.ts                  ← All TypeScript type definitions
-│   ├── python-api.ts             ← HTTP client for Python API
-│   ├── utils.ts                  ← Date formatting, helpers
-│   ├── model-profiles.ts         ← Profile filter utilities
-│   └── jsonl.ts                  ← JSONL validation helpers
-│
-├── python_api/                   ← FastAPI backend (all Python)
-│   ├── main.py                   ← All API routes (endpoints)
-│   ├── services.py               ← All business logic (~1800 lines)
-│   ├── agentic_workflow.py       ← Temporal workflow definition
-│   ├── agentic_activities.py     ← Agent tool implementations
-│   ├── store.py                  ← PostgreSQL + JSON persistence
-│   ├── huggingface_jobs.py       ← HF Jobs API integration
-│   ├── temporal_runtime.py       ← Temporal setup/management
-│   ├── errors.py                 ← ApiError exception class
-│   ├── env.py                    ← .env file loader
-│   ├── local_qlora/              ← Local GPU training module
-│   │   ├── __init__.py           ← Job spawn/monitor (520 lines)
-│   │   ├── config.py             ← Training configuration dataclass
-│   │   ├── train.py              ← QLoRA training script (436 lines)
-│   │   ├── model.py              ← Model loading
-│   │   ├── data.py               ← Dataset preparation
-│   │   ├── evaluation.py         ← Eval metrics
-│   │   ├── export.py             ← GGUF conversion
-│   │   └── state.py              ← Status JSON tracking
-│   └── data/                     ← Local JSON state (fallback)
-│
-├── uploads_python/               ← Uploaded datasets & job artifacts
-│   ├── datasets/                 ← JSONL training files
-│   └── jobs/                     ← Per-job directories
-│       └── {job_id}/
-│           ├── artifacts/
-│           │   ├── adapter/      ← LoRA weights + tokenizer
-│           │   └── checkpoint-N/ ← Intermediate checkpoints
-│           ├── local_train_config.json
-│           ├── local_train_status.json
-│           ├── local_train_events.jsonl
-│           ├── local_train.log
-│           └── local_train_metrics.json
-│
-├── tests/                        ← Vitest test files
-├── samples/                      ← Sample JSONL datasets
-├── docker/                       ← Docker build files
-├── temporal/                     ← Temporal dynamic config
-├── .env.example                  ← Environment variable template
-├── .env                          ← Your local config (gitignored)
-├── docker-compose.yml            ← Production Docker stack
-├── docker-compose.dev.yaml       ← Dev Docker stack (hot reload)
-├── Dockerfile.api                ← Python API container
-├── package.json                  ← Node.js deps and scripts
-├── requirements.txt              ← Python runtime deps
-└── requirements-local-training.txt  ← Python training deps
+├── app/
+│   ├── dashboard/
+│   ├── datasets/
+│   │   ├── new/
+│   │   └── [id]/
+│   ├── jobs/
+│   │   ├── new/
+│   │   └── [id]/
+│   ├── playground/
+│   ├── settings/
+│   ├── agent/
+│   └── (auth)/
+├── components/
+│   ├── dashboard/
+│   ├── dataset/
+│   ├── jobs/
+│   ├── playground/
+│   ├── settings/
+│   ├── agent/
+│   └── ui/
+├── lib/
+├── python_api/
+│   ├── main.py
+│   ├── services.py
+│   ├── store.py
+│   ├── temporal_runtime.py
+│   ├── agentic_workflow.py
+│   ├── agentic_activities.py
+│   ├── huggingface_jobs.py
+│   ├── errors.py
+│   ├── env.py
+│   ├── local_qlora/
+│   └── data/
+├── uploads_python/
+├── tests/
+├── samples/
+├── docker/
+├── temporal/
+├── README.md
+├── MANUAL.md
+├── package.json
+├── requirements.txt
+└── requirements-local-training.txt
 ```
+
+### Most important files
+
+If you are new to the codebase, start here:
+
+1. `README.md`
+2. `python_api/main.py`
+3. `python_api/services.py`
+4. `python_api/store.py`
+5. `python_api/local_qlora/config.py`
+6. `python_api/local_qlora/train.py`
+7. `lib/python-api.ts`
+8. `components/jobs/create-job-form.tsx`
+9. `components/jobs/job-detail-client.tsx`
+10. `components/settings/model-profiles-settings.tsx`
 
 ---
 
-## 4. Setup & Installation
+## 4. Setup and Installation
 
 ### Prerequisites
 
-- Node.js 20+ and npm
-- Python 3.11+
-- Ollama (for local inference) — https://ollama.com
+- Node.js `20+` (`22` recommended)
+- Python `3.11+` (`3.12` recommended)
+- Ollama
 - Git
+- NVIDIA GPU for the recommended free local fine-tuning path
 
-### Step 1 — Clone and install Node dependencies
+### Clone and install frontend dependencies
 
 ```bash
 git clone <repo-url>
@@ -191,1378 +222,895 @@ cd agentic
 npm install
 ```
 
-### Step 2 — Create your .env file
+### Create `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+At minimum for local inference:
+
 ```env
 LLM_PROVIDER="ollama"
 OLLAMA_BASE_URL="http://127.0.0.1:11434"
 OLLAMA_BASE_MODEL="qwen3:8b"
+PYTHON_API_URL="http://127.0.0.1:8001"
+TEMPORAL_ADDRESS="127.0.0.1:7233"
+TEMPORAL_NAMESPACE="default"
+TEMPORAL_TASK_QUEUE="agentic-agent-queue"
+TEMPORAL_AUTO_START_DEV_SERVER="1"
+TEMPORAL_DEV_SERVER_UI="0"
 ```
 
-### Step 3 — Set up Python environment
+At minimum for local GPU fine-tuning:
+
+```env
+LOCAL_TRAINING_ENABLED="1"
+LOCAL_TRAINING_BASE_MODEL="Qwen/Qwen2.5-3B-Instruct"
+LOCAL_TRAINING_PYTHON="/absolute/path/to/agentic/.venv-train/bin/python"
+LOCAL_TRAINING_ALLOW_CPU_FALLBACK="0"
+LOCAL_TRAINING_MULTI_GPU="0"
+LOCAL_TRAINING_EVAL_RATIO="0.1"
+LOCAL_TRAINING_SEED="42"
+```
+
+### Create API venv
 
 ```bash
-# Create venv for the API server
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install API dependencies
 pip install -r requirements.txt
 ```
 
-### Step 4 — Set up training environment (for local GPU training)
+### Create training venv
+
+Use a separate venv for training:
 
 ```bash
-# Separate venv for training to avoid dependency conflicts
 python3 -m venv .venv-train
 source .venv-train/bin/activate
-
 pip install -r requirements-local-training.txt
-
-# Point to this Python in .env:
-# LOCAL_TRAINING_PYTHON="/path/to/agentic/.venv-train/bin/python"
 ```
 
-### Step 5 — Pull a model in Ollama
+This venv is the interpreter that `LOCAL_TRAINING_PYTHON` must point to.
+
+### Pull a local model in Ollama
 
 ```bash
 ollama pull qwen3:8b
 ```
 
-### Step 6 — (Optional) Set up PostgreSQL
+### Optional PostgreSQL setup
 
-If you want persistent database storage (recommended for production):
 ```bash
-# Start PostgreSQL (with Docker or locally)
-docker run -d -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=agentic -p 5432:5432 postgres:16-alpine
-
-# Set in .env:
-# DATABASE_URL="postgresql://postgres:postgres@localhost:5432/agentic"
-# DATABASE_SCHEMA="agentic_app"
+docker run -d \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=agentic \
+  -p 5432:5432 \
+  postgres:16-alpine
 ```
 
-If `DATABASE_URL` is not set, the app falls back to a local JSON file at `python_api/data/state.json`.
+Then set:
+
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/agentic"
+DATABASE_SCHEMA="agentic_app"
+```
+
+If you do not configure PostgreSQL, the app will use local JSON state.
 
 ---
 
 ## 5. Environment Variables
 
-### Database
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | _(none)_ | PostgreSQL connection string. If absent, uses JSON fallback |
-| `DATABASE_SCHEMA` | `agentic_app` | PostgreSQL schema name |
+### Core runtime
 
-### Model Provider Selection
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | Active provider: `ollama`, `openai`, `huggingface`, `local`, `groq`, `gemini`, `cerebras`, `together` |
+| Variable | Description |
+|---|---|
+| `LLM_PROVIDER` | default provider selection |
+| `PYTHON_API_URL` | Python API base URL |
+| `NEXT_PUBLIC_PYTHON_API_URL` | browser-visible Python API URL |
+| `DATABASE_URL` | Postgres connection string |
+| `DATABASE_SCHEMA` | Postgres schema |
 
-### Ollama (Local, Free)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server address |
-| `OLLAMA_BASE_MODEL` | `qwen3:8b` | Default model for inference |
-| `OLLAMA_AGENT_MODEL` | same as base | Model for agent orchestration |
+### Ollama
 
-### OpenAI (Paid, Managed Fine-tuning)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | _(empty)_ | Required for OpenAI fine-tuning and inference |
-| `OPENAI_AGENT_MODEL` | `gpt-5.4-mini` | Agent orchestration model |
-| `OPENAI_BASE_URL` | _(OpenAI default)_ | Override for custom endpoints |
+| Variable | Description |
+|---|---|
+| `OLLAMA_BASE_URL` | Ollama host |
+| `OLLAMA_SMALL_MODEL` | small Ollama profile |
+| `OLLAMA_BASE_MODEL` | medium Ollama profile |
+| `OLLAMA_LARGE_MODEL` | large Ollama profile |
+| `OLLAMA_THINKING_MODEL` | reasoning Ollama profile |
+| `OLLAMA_AGENT_MODEL` | Ollama model for agent usage |
 
-### Free Inference Providers (API keys only, no fine-tuning)
-| Variable | Provider | Free Tier |
-|----------|---------|-----------|
-| `GROQ_API_KEY` | Groq | Generous free limits |
-| `GOOGLE_API_KEY` | Google Gemini | 15 RPM, 1M tokens/day |
-| `CEREBRAS_API_KEY` | Cerebras | Free, ultra-fast hardware |
-| `TOGETHER_API_KEY` | Together AI | $25 free credits |
+### Local GPU QLoRA
 
-### Hugging Face (Cloud Fine-tuning)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HF_TOKEN` | _(empty)_ | HF access token (required for HF jobs) |
-| `HF_NAMESPACE` | _(your username)_ | HF user/org for repos |
-| `HF_BASE_MODEL` | `Qwen/Qwen2.5-3B-Instruct` | Default base model |
-| `HF_DATASET_REPO` | _(empty)_ | Dataset repo ID on HF Hub |
-| `HF_MODEL_REPO_ID` | _(empty)_ | Model repo ID on HF Hub |
-| `HF_JOBS_FLAVOR` | `a10g-large` | GPU instance type |
-| `HF_JOBS_TIMEOUT` | `3h` | Max job duration |
-| `HF_JOBS_IMAGE` | `huggingface/trl` | Training Docker image |
+| Variable | Description |
+|---|---|
+| `LOCAL_TRAINING_ENABLED` | enable local fine-tuning |
+| `LOCAL_TRAINING_BASE_MODEL` | default local training model |
+| `LOCAL_TRAINING_PYTHON` | required path to training interpreter |
+| `LOCAL_TRAINING_ALLOW_CPU_FALLBACK` | allow CPU fallback, extremely slow |
+| `LOCAL_TRAINING_MULTI_GPU` | enable accelerate multi-GPU launch |
+| `LOCAL_TRAINING_GPU_INDEX` | pin a single GPU |
+| `LOCAL_TRAINING_EVAL_RATIO` | evaluation split |
+| `LOCAL_TRAINING_SEED` | reproducibility seed |
 
-### Local GPU Training (QLoRA)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOCAL_TRAINING_ENABLED` | `1` | Set to `1` to enable local training |
-| `LOCAL_TRAINING_BASE_MODEL` | `Qwen/Qwen2.5-3B-Instruct` | Default base model |
-| `LOCAL_TRAINING_PYTHON` | _(system python)_ | Python path for training venv |
-| `LOCAL_TRAINING_ALLOW_CPU_FALLBACK` | `0` | Set `1` to allow CPU training (very slow) |
-| `LOCAL_TRAINING_MULTI_GPU` | `0` | Set `1` for multi-GPU training |
-| `LOCAL_TRAINING_GPU_INDEX` | _(all)_ | Specific GPU index (e.g., `2`) |
-| `LOCAL_TRAINING_EVAL_RATIO` | `0.1` | Fraction of data used for evaluation |
-| `LOCAL_TRAINING_SEED` | `42` | Random seed for reproducibility |
+### OpenAI
 
-### Temporal (Agent Workflow Engine)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | Temporal server address |
-| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace |
-| `TEMPORAL_TASK_QUEUE` | `agentic-agent-queue` | Worker task queue name |
-| `TEMPORAL_AUTO_START_DEV_SERVER` | `1` | Auto-start embedded Temporal dev server |
-| `TEMPORAL_DEV_SERVER_UI` | `0` | Enable Temporal UI (port 8233) |
+| Variable | Description |
+|---|---|
+| `OPENAI_API_KEY` | required for OpenAI fine-tuning and hosted inference |
+| `OPENAI_AGENT_MODEL` | model used for agent orchestration |
+| `OPENAI_BASE_URL` | optional override |
 
-### Frontend
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEXT_PUBLIC_PYTHON_API_URL` | `http://127.0.0.1:8001` | Python API URL visible to browser |
-| `PYTHON_API_URL` | `http://127.0.0.1:8001` | Python API URL for server-side Next.js |
-| `NEXTAUTH_SECRET` | _(empty)_ | NextAuth secret (legacy, can be any string) |
-| `NEXTAUTH_URL` | `http://localhost:10087` | NextAuth base URL (legacy) |
+### Hugging Face Jobs
+
+| Variable | Description |
+|---|---|
+| `HF_TOKEN` | required for paid HF Jobs runs |
+| `HF_NAMESPACE` | user or org namespace |
+| `HF_BASE_MODEL` | default HF base model |
+| `HF_DATASET_REPO` | dataset repo override |
+| `HF_MODEL_REPO_ID` | model repo override |
+| `HF_JOBS_FLAVOR` | hardware flavor |
+| `HF_JOBS_TIMEOUT` | runtime timeout |
+| `HF_JOBS_IMAGE` | container image |
+| `HF_TRACKIO_PROJECT` | training tracking project |
+| `HF_TRACKIO_SPACE_ID` | optional trackio space |
+
+### Inference-only providers
+
+| Variable | Provider |
+|---|---|
+| `GROQ_API_KEY` | Groq |
+| `GOOGLE_API_KEY` | Gemini |
+| `CEREBRAS_API_KEY` | Cerebras |
+| `TOGETHER_API_KEY` | Together |
+
+### Temporal
+
+| Variable | Description |
+|---|---|
+| `TEMPORAL_ADDRESS` | Temporal host |
+| `TEMPORAL_NAMESPACE` | namespace |
+| `TEMPORAL_TASK_QUEUE` | worker queue |
+| `TEMPORAL_AUTO_START_DEV_SERVER` | auto-start local Temporal dev server |
+| `TEMPORAL_DEV_SERVER_UI` | enable local Temporal UI |
+
+### Legacy frontend auth
+
+| Variable | Description |
+|---|---|
+| `NEXTAUTH_SECRET` | legacy auth secret |
+| `NEXTAUTH_URL` | legacy auth URL |
 
 ---
 
 ## 6. Running the App
 
-### Local Development (No Docker)
+### Local development
 
-Open **3 terminal windows**:
+Use three terminals.
 
-**Terminal 1 — Python API**
+#### Terminal 1 — Python API
+
 ```bash
 cd agentic
 source .venv/bin/activate
-uvicorn python_api.main:app --host 0.0.0.0 --port 8001 --reload
+python -m uvicorn python_api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-**Terminal 2 — Next.js Frontend**
+#### Terminal 2 — Next.js frontend
+
 ```bash
 cd agentic
 npm run dev
-# Open http://localhost:3000
 ```
 
-**Terminal 3 — Ollama (if not running as service)**
+#### Terminal 3 — Ollama
+
 ```bash
 ollama serve
 ```
 
-### With Docker (Production)
+### Health endpoints
 
-```bash
-# Build and start everything (PostgreSQL + Temporal + API + Frontend)
-docker compose up --build
-
-# Access:
-# App:          http://localhost:3000
-# API:          http://localhost:8001
-# Temporal UI:  http://localhost:8080
-```
-
-### With Docker (Development / Hot Reload)
-
-```bash
-docker compose -f docker-compose.dev.yaml up --build
-```
-
----
-
-## 7. Pages & User Interface
-
-### `/dashboard` — Home
-
-What you see:
-- **Stats cards**: Total datasets, training runs, running jobs, completed models
-- **3-step onboarding guide**: Pick model → Upload dataset → Train & export
-- **Recent activity**: Latest jobs and their status
-
-What it connects to:
-- `GET /dashboard/summary` Python API endpoint
-
----
-
-### `/datasets` — Dataset List
-
-What you see:
-- All uploaded datasets with name, record count, validation status, date
-- **Breadcrumb**: Datasets
-- Filter by validation status (VALID / INVALID)
-- Click any dataset → detail page
-
-What it connects to:
-- `GET /datasets` Python API endpoint
-
----
-
-### `/datasets/new` — Upload Dataset
-
-Two tabs:
-1. **Upload file** — drag-drop or click to upload a `.jsonl` file
-2. **Enter manually** — type records in a table interface
-
-**Supported JSONL formats:**
-```jsonl
-// Chat format (preferred)
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
-
-// Instruction format
-{"instruction": "...", "input": "...", "output": "..."}
-```
-
-What it connects to:
-- `POST /datasets` Python API endpoint (multipart upload)
-
----
-
-### `/datasets/[id]` — Dataset Detail
-
-What you see:
-- **Breadcrumb**: Datasets → Dataset Name
-- File size, creation date, validation badge
-- **Validation Summary**: Total records, valid count, invalid count
-- **Sample preview**: First 3 rows shown in a readable format (not raw JSON)
-- **Error list**: Lines that failed validation and why
-- **Warning list**: Lines that passed but have issues
-- Action buttons: Start fine-tuning job, Pre-upload to OpenAI
-
-What it connects to:
-- `GET /datasets/{id}` Python API endpoint
-
----
-
-### `/jobs` — Training Jobs List
-
-What you see:
-- **Filter pills**: All / Running / Failed / Completed (with counts)
-- Each job card: dataset name, provider, base model, status badge, mini loss chart
-- Color-coded left bar: green=success, blue=running, red=failed
-
-What it connects to:
-- `GET /jobs` Python API endpoint
-
----
-
-### `/jobs/new` — Create Training Job
-
-What you see:
-1. **Dataset selector** — only shows VALID datasets
-2. **Base model selector** — shows fine-tuning capable profiles
-3. Selected run preview
-4. **Export options** (local GPU only):
-   - Export to GGUF checkbox
-   - Quantization format (Q4_K_M recommended)
-   - Push to Ollama toggle + model name field
-5. **Training hyperparameters** (collapsible, local GPU only):
-   - Epochs (default: 3)
-   - Learning rate (default: 0.0002)
-   - Batch size per device (default: 2)
-6. Start fine-tuning button
-
-What it connects to:
-- `GET /datasets?validationStatus=VALID`
-- `GET /settings/model-profiles`
-- `POST /jobs`
-
----
-
-### `/jobs/[id]` — Job Detail & Live Monitoring
-
-What you see:
-- **Breadcrumb**: Training runs → Dataset Name
-- Status badge, provider, base model, creation date
-- **Progress bar** (for local training): percent complete
-- **Current stage**: queued → loading_model → training → evaluating → saving → succeeded
-- **Loss chart**: Live training/eval loss over epochs
-- **GPU metrics**: Memory usage, utilization, temperature per GPU
-- **Event log**: Timestamped messages from the trainer
-- **Download buttons** (when succeeded): Download adapter ZIP, Download GGUF
-- **Test Model panel**: Chat interface to test the model via Ollama
-
-Auto-refreshes every 5 seconds while running.
-
-What it connects to:
-- `GET /jobs/{id}`
-- `POST /jobs/{id}/sync`
-- `GET /jobs/{id}/events`
-- `GET /jobs/{id}/download`
-- `POST /playground/run` (for the test panel)
-
----
-
-### `/playground` — Side-by-Side Comparison
-
-What you see:
-- **Base model selector** — any inference-capable profile
-- **Comparison model selector** — optional second model
-- Prompt text area
-- **Run comparison** button
-- Two columns of output (base vs. fine-tuned)
-
-Use case: After training, compare "Qwen 0.5B base" vs. "Qwen 0.5B fine-tuned" on the same prompt.
-
-What it connects to:
-- `GET /settings/model-profiles`
-- `POST /playground/run`
-
----
-
-### `/settings` — Model Configuration
-
-Three tabs:
-
-**Model Profiles tab** (default):
-- Create new profiles: name, provider, model, category, description
-- Edit or delete existing profiles
-- Status badge: "Ready to use" (green) or "Needs provider setup" (amber)
-
-**Workspace Defaults tab**:
-- Set which profile is used by default for:
-  - Playground base model
-  - Playground comparison model
-  - Agent base model
-  - Agent reasoning model
-  - Default training profile
-- Save defaults button
-
-**Providers tab**:
-- Shows all 8 providers with configured/needs-setup status
-- Shows base URL and capabilities (inference / fine-tuning)
-
-What it connects to:
-- `GET /settings/model-profiles`
-- `POST /settings/model-profiles`
-- `PATCH /settings/model-profiles/{id}`
-- `PATCH /settings/model-profiles/defaults`
-- `DELETE /settings/model-profiles/{id}`
-
----
-
-### `/agent` — Autonomous Agent
-
-What you see:
-- Runtime status (Temporal connected / not)
-- **Create agent run form**:
-  - Goal (text description of what you want)
-  - Dataset to work with (optional)
-  - Base model for training
-  - Agent model for reasoning
-  - Evaluation prompt (optional)
-- List of past agent runs
-- Click a run → see step-by-step execution log
-
-What the agent does:
-1. Lists available datasets
-2. Validates and uploads dataset if needed
-3. Creates fine-tuning job
-4. Waits for job to complete (polls every 30–60 seconds)
-5. Runs playground evaluation
-6. Reports final model and metrics
-
-What it connects to:
+- `GET /health`
 - `GET /agent/runtime`
-- `GET /agent/runs`
-- `POST /agent/runs`
-- `GET /agent/runs/{id}`
+- `GET /settings/local-training/runtime`
+
+### Helpful URLs
+
+- `http://localhost:3000/dashboard`
+- `http://localhost:3000/datasets`
+- `http://localhost:3000/jobs`
+- `http://localhost:3000/playground`
+- `http://localhost:3000/settings`
+- `http://localhost:3000/agent`
+
+---
+
+## 7. Pages and User Experience
+
+### `/dashboard`
+
+Main landing page for the app.
+
+Shows:
+
+- summary cards
+- recent activity
+- high-level state of datasets, jobs, and models
+
+### `/datasets`
+
+Dataset list page.
+
+Shows:
+
+- uploaded datasets
+- validation status
+- record counts
+
+### `/datasets/new`
+
+Dataset upload page.
+
+Flow:
+
+1. choose a JSONL file
+2. upload to backend
+3. backend validates each record
+4. open dataset detail page
+
+### `/datasets/[id]`
+
+Dataset detail page.
+
+Shows:
+
+- file size
+- validation status
+- validation summary
+- example previews
+- dataset download button
+- start fine-tuning shortcut
+- optional OpenAI pre-upload action
+
+### `/jobs`
+
+Job list page.
+
+Shows:
+
+- job status
+- provider
+- dataset name
+- timestamps
+
+### `/jobs/new`
+
+Fine-tuning job creation page.
+
+Important features:
+
+- valid dataset selector
+- profile selector
+- local runtime readiness panel
+- training speed presets
+- export options
+- advanced hyperparameters
+
+Current local training presets:
+
+| Preset | Use case |
+|---|---|
+| `Fast smoke test` | shortest run for validation |
+| `Balanced` | recommended default |
+| `Best quality` | slower but stronger adaptation |
+
+The page also explains:
+
+- low VRAM vs balanced vs stronger-quality model tiers
+- whether the local runtime is ready
+- whether `Unsloth` is available
+- whether `Ollama` is reachable
+
+### `/jobs/[id]`
+
+Job detail page.
+
+This is the main monitoring and post-training page.
+
+It shows:
+
+- live progress
+- loss chart
+- GPU metrics
+- runtime path summary
+- warnings
+- job events
+- model artifact info
+- dataset shortcut
+
+For completed local jobs it also shows a dedicated **ready to download** section with:
+
+- `Download model files`
+- `Download GGUF model`
+- `Download training dataset`
+
+It also includes a model test panel after successful completion.
+
+### `/playground`
+
+Prompt comparison UI.
+
+Lets the user compare:
+
+- base model output
+- tuned model output
+
+### `/settings`
+
+Model settings and provider configuration UI.
+
+Used for:
+
+- viewing model profiles
+- creating custom profiles
+- setting defaults
+- seeing provider availability
+
+Curated Ollama options currently include:
+
+- `qwen3:4b`
+- `qwen3:8b`
+- `llama3.2:3b`
+- `gemma3:4b`
+- `llama3.1:8b`
+- `qwen2.5:7b`
+- `deepseek-r1:8b`
+
+Curated local training models currently include:
+
+- `Qwen/Qwen2.5-0.5B-Instruct`
+- `Qwen/Qwen2.5-1.5B-Instruct`
+- `Qwen/Qwen2.5-3B-Instruct`
+- `Qwen/Qwen2.5-7B-Instruct`
+- `microsoft/Phi-3.5-mini-instruct`
+- `mistralai/Mistral-7B-Instruct-v0.3`
+
+### `/agent`
+
+Temporal-backed agent run interface.
+
+Used for:
+
+- launching agent workflows
+- tracking agent steps
+- observing long-running orchestration
 
 ---
 
 ## 8. Core Workflows
 
-### Workflow A: Fine-tune a Model (Manual)
+### Workflow A — Upload and validate a dataset
 
-```
-1. Upload dataset
-   → POST /datasets (multipart)
-   → Backend validates each JSONL line
-   → Status: VALID or INVALID
+1. Open `Datasets -> New`
+2. Upload a `.jsonl` file
+3. Backend stores the file under `uploads_python/datasets/{dataset_id}/`
+4. Backend validates each line
+5. UI shows summary, examples, and validation status
+6. User can download the uploaded dataset from the detail page
 
-2. Create training job
-   → POST /jobs { datasetId, baseModel, modelProvider, ... }
-   → Backend checks dataset validity
-   → For local: spawns Python subprocess (train.py)
-   → For OpenAI: uploads file, calls fine_tuning.jobs.create()
-   → For HF: submits Hugging Face Job
+### Workflow B — Start a local fine-tuning run
 
-3. Monitor job
-   → GET /jobs/{id} (every 5 seconds auto-refresh)
-   → POST /jobs/{id}/sync (forces status refresh from provider)
-   → Status progresses: queued → loading_model → training → succeeded
+1. Open `Jobs -> New`
+2. Choose a valid dataset
+3. Choose a local QLoRA profile
+4. Confirm the local runtime is ready
+5. Pick a speed preset
+6. Optionally enable:
+   - `GGUF` export
+   - `Push to Ollama`
+7. Start the run
+8. Backend builds a local training config and spawns a process
+9. Job detail page polls and shows progress
 
-4. Download or use
-   → GET /jobs/{id}/download → ZIP with adapter weights
-   → Use in Ollama (if GGUF exported)
-   → Use in playground for comparison
-```
+### Workflow C — Download the results
 
-### Workflow B: Fine-tune a Model (Autonomous Agent)
+After a successful local job:
 
-```
-1. Open /agent
-2. Enter goal: "Fine-tune a coding model using my Python dataset"
-3. Select dataset, base model, agent model
-4. Click "Start agent run"
+1. open the job detail page
+2. download the adapter bundle
+3. optionally download `GGUF`
+4. optionally download the training dataset
+5. optionally test the tuned model directly from the page
 
-Agent automatically:
-→ Calls list_datasets tool
-→ Calls get_dataset tool to validate
-→ Calls upload_dataset_to_openai if needed
-→ Calls create_job tool
-→ Calls wait_for_seconds (60s) in a loop
-→ Calls sync_job until status = "succeeded"
-→ Calls run_playground with your evaluation prompt
-→ Returns summary with model name and metrics
-```
+### Workflow D — Playground comparison
 
-### Workflow C: Compare Models in Playground
+1. pick base model
+2. pick tuned model
+3. enter a prompt
+4. compare outputs side by side
 
-```
-1. Open /playground
-2. Select base model profile (e.g., "Ollama Qwen 0.5B")
-3. Select comparison profile (e.g., "My Fine-tuned Model in Ollama")
-4. Type a prompt
-5. Click "Run comparison"
-6. See both responses side-by-side
-```
+### Workflow E — Agent run
+
+1. start an agent run from `/agent`
+2. FastAPI ensures required providers are configured
+3. Temporal workflow is started
+4. workflow snapshots are persisted and queried
 
 ---
 
 ## 9. Model Providers
 
-### Provider Capabilities Matrix
+### Local Ollama
 
-| Provider | Inference | Fine-tuning | Setup Required |
-|----------|-----------|-------------|----------------|
-| **Ollama** | ✅ Yes | ❌ No | Install Ollama + pull model |
-| **OpenAI** | ✅ Yes | ✅ Yes (managed) | `OPENAI_API_KEY` |
-| **Hugging Face** | ❌ No | ✅ Yes (cloud SFT) | `HF_TOKEN` + hub repos |
-| **Local QLoRA** | ❌ No | ✅ Yes (on-device) | Training Python venv + GPU |
-| **Groq** | ✅ Yes | ❌ No | `GROQ_API_KEY` (free tier) |
-| **Google Gemini** | ✅ Yes | ❌ No | `GOOGLE_API_KEY` (free tier) |
-| **Cerebras** | ✅ Yes | ❌ No | `CEREBRAS_API_KEY` (free tier) |
-| **Together AI** | ✅ Yes | ❌ No | `TOGETHER_API_KEY` ($25 free) |
+Purpose:
 
-### How Provider Selection Works
+- free local inference
+- free local agent usage
+- optionally host exported local models after training
 
-```python
-# python_api/services.py — get_model_provider()
+Strengths:
 
-1. If provider explicitly passed → validate and use it
-2. Else read LLM_PROVIDER env var
-3. Else if OPENAI_API_KEY set → use "openai"
-4. Else → use "ollama" (default)
-```
+- cheapest path
+- easy local testing
+- offline-friendly
 
-### How Inference Works (All Providers)
+### Local GPU QLoRA
 
-All 6 inference providers use the **OpenAI Python SDK** with different `base_url` values:
+Purpose:
 
-```python
-# python_api/services.py — get_model_client()
+- free local fine-tuning on your own GPU
 
-Provider URLs:
-  ollama    → http://127.0.0.1:11434/v1/
-  openai    → https://api.openai.com/v1 (default)
-  groq      → https://api.groq.com/openai/v1
-  gemini    → https://generativelanguage.googleapis.com/v1beta/openai/
-  cerebras  → https://api.cerebras.ai/v1
-  together  → https://api.together.xyz/v1
-```
+Strengths:
 
-All use `client.chat.completions.create(model=model, messages=[...])`.
+- no cloud training bill
+- artifacts stay local
+- adapter and `GGUF` downloads
+
+### OpenAI
+
+Purpose:
+
+- managed hosted fine-tuning
+- hosted inference
+
+Strengths:
+
+- fully managed
+- simple hosted workflow
+
+### Hugging Face Jobs
+
+Purpose:
+
+- paid cloud fine-tuning for open-source models
+
+Strengths:
+
+- hardware managed in the cloud
+- model and dataset repo support
+
+### Groq / Gemini / Cerebras / Together
+
+Purpose:
+
+- inference-only usage
+- no fine-tuning in this app today
 
 ---
 
-## 10. Python API — All Endpoints
+## 10. Local GPU QLoRA
 
-### Health
+### Overview
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | System health check |
-| GET | `/agent/runtime` | Temporal runtime status + provider info |
+Local QLoRA is the recommended free fine-tuning path.
 
-### Dashboard
+The runtime lives in:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/dashboard/summary` | Stats: dataset count, job count, recent activity |
+- `python_api/local_qlora/__init__.py`
+- `python_api/local_qlora/config.py`
+- `python_api/local_qlora/train.py`
+- `python_api/local_qlora/model.py`
+- `python_api/local_qlora/export.py`
+- `python_api/local_qlora/state.py`
 
-### Model Profiles
+### Speed presets
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/settings/model-profiles` | List all profiles, defaults, provider statuses |
-| POST | `/settings/model-profiles` | Create new profile |
-| PATCH | `/settings/model-profiles/defaults` | Update workspace defaults |
-| PATCH | `/settings/model-profiles/{id}` | Update a profile |
-| DELETE | `/settings/model-profiles/{id}` | Delete a profile |
+Defined in:
+
+- frontend helper: `lib/local-training.ts`
+- backend defaults: `python_api/local_qlora/config.py`
+
+Current defaults:
+
+| Preset | Epochs | LR | Batch | Grad Acc | Max Seq |
+|---|---:|---:|---:|---:|---:|
+| `fast` | 1 | `2e-4` | 2 | 2 | 768 |
+| `balanced` | 3 | `1e-4` | 2 | 4 | 1024 |
+| `quality` | 4 | `8e-5` | 1 | 8 | 1536 |
+
+### Runtime readiness endpoint
+
+The frontend uses:
+
+- `GET /settings/local-training/runtime`
+
+This returns a snapshot of:
+
+- whether local training is enabled
+- whether `LOCAL_TRAINING_PYTHON` is configured
+- whether the interpreter exists
+- GPU count
+- dependency availability
+- `Unsloth` availability
+- `Ollama` reachability
+
+### Unsloth path
+
+If `Unsloth` is installed in the training venv, the runtime prefers:
+
+- a faster training path
+- lower VRAM use
+- direct `GGUF` export support
+
+If `Unsloth` is missing, the code falls back to:
+
+- `Transformers + PEFT + bitsandbytes`
+
+### Export behavior
+
+Local runs can:
+
+- save adapters
+- save tokenizer files
+- write metrics
+- export `GGUF`
+- register the model in `Ollama`
+
+Important rule:
+
+- `Push to Ollama` requires `GGUF` export
+
+The job creation UI now defensively resets `pushToOllama` to `false` when `exportGguf` is disabled.
+
+### Artifacts created during local runs
+
+Inside `uploads_python/jobs/{job_id}/`:
+
+- `local_train_config.json`
+- `local_train_status.json`
+- `local_train_events.jsonl`
+- `local_train.log`
+- `local_train_metrics.json`
+- `artifacts/adapter/`
+- optional `artifacts/adapter/gguf/*.gguf`
+
+---
+
+## 11. Python API Endpoints
+
+### Health and dashboard
+
+- `GET /health`
+- `GET /dashboard/summary`
+
+### Settings
+
+- `GET /settings/model-profiles`
+- `GET /settings/local-training/runtime`
+- `POST /settings/model-profiles`
+- `PATCH /settings/model-profiles/defaults`
+- `PATCH /settings/model-profiles/{profile_id}`
+- `DELETE /settings/model-profiles/{profile_id}`
 
 ### Datasets
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/datasets` | List datasets (filter: `?validationStatus=VALID`) |
-| POST | `/datasets` | Upload JSONL file (multipart form) |
-| GET | `/datasets/{id}` | Full dataset detail with validation |
-| POST | `/datasets/{id}/upload-to-openai` | Upload to OpenAI Files API |
+- `GET /datasets`
+- `POST /datasets`
+- `GET /datasets/{dataset_id}`
+- `GET /datasets/{dataset_id}/download`
+- `POST /datasets/{dataset_id}/upload-to-openai`
 
 ### Jobs
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/jobs` | List all training jobs |
-| POST | `/jobs` | Create new training job |
-| GET | `/jobs/{id}` | Full job detail with events |
-| POST | `/jobs/{id}/sync` | Force status refresh from provider |
-| GET | `/jobs/{id}/events` | Job event log |
-| POST | `/jobs/{id}/cancel` | Cancel active job |
-| GET | `/jobs/{id}/download` | Download adapter/GGUF as ZIP |
+- `GET /jobs`
+- `POST /jobs`
+- `GET /jobs/{job_id}`
+- `POST /jobs/{job_id}/sync`
+- `GET /jobs/{job_id}/events`
+- `POST /jobs/{job_id}/cancel`
+- `GET /jobs/{job_id}/download`
 
 ### Playground
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/playground/run` | Run prompt on 1 or 2 models |
+- `POST /playground/run`
 
-### Agent Runs
+### Agent
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/agent/runs` | List all agent runs |
-| POST | `/agent/runs` | Start new agent run |
-| GET | `/agent/runs/{id}` | Full run detail with steps |
-| POST | `/agent/runs/{id}/cancel` | Cancel active run |
+- `GET /agent/runtime`
+- `GET /agent/runs`
+- `POST /agent/runs`
+- `GET /agent/runs/{run_id}`
+- `POST /agent/runs/{run_id}/cancel`
 
-### Request/Response Formats
+### Notes about payloads
 
-**POST /jobs — CreateJobRequest**
-```json
-{
-  "datasetId": "string (required)",
-  "baseModel": "string (e.g. Qwen/Qwen2.5-0.5B-Instruct)",
-  "modelProvider": "local | openai | huggingface",
-  "hyperparameters": {},
-  "exportGguf": true,
-  "ggufQuantization": "q4_k_m",
-  "pushToOllama": false,
-  "ollamaModelName": "",
-  "numEpochs": 3,
-  "learningRate": 0.0002,
-  "perDeviceBatchSize": 2
-}
-```
+Local job creation supports:
 
-**POST /playground/run — PlaygroundRunRequest**
-```json
-{
-  "prompt": "string (required)",
-  "baseModel": "string",
-  "baseModelProvider": "ollama | openai | groq ...",
-  "fineTunedModel": "string (optional second model)",
-  "fineTunedModelProvider": "string"
-}
-```
+- `trainingPreset`
+- `exportGguf`
+- `ggufQuantization`
+- `pushToOllama`
+- `ollamaModelName`
+- `numEpochs`
+- `learningRate`
+- `perDeviceBatchSize`
 
-**POST /agent/runs — CreateAgentRunRequest**
-```json
-{
-  "goal": "string (required, describe what you want)",
-  "datasetId": "string (optional)",
-  "baseModel": "string",
-  "baseModelProvider": "string",
-  "evaluationPrompt": "string (optional)",
-  "agentModel": "string",
-  "agentModelProvider": "string"
-}
-```
+Artifact downloads:
+
+- dataset download route returns the original dataset file
+- job download route returns the adapter bundle by default
+- `?type=gguf` returns the exported GGUF file when available
 
 ---
 
-## 11. Backend Services — Key Functions
+## 12. Persistence and Artifacts
 
-**File**: `python_api/services.py` (~1800 lines)
+### Postgres mode
 
-All business logic lives here. Grouped by category:
+When Postgres is enabled, state is stored in tables under `DATABASE_SCHEMA`.
 
-### Provider Functions
-```
-get_model_provider(provider?)       → resolves which provider to use
-get_model_client(provider, model)   → returns OpenAI SDK client for that provider
-provider_supports_inference(p)      → True for ollama, openai, groq, gemini, cerebras, together
-provider_supports_fine_tuning(p)    → True for openai, huggingface, local
-provider_is_configured(p)           → True if required API key is set
-get_provider_base_url(p)            → base URL string for that provider
-```
+Main collections:
 
-### Model Profile Functions
-```
-_default_model_profiles()           → generates 22 seeded profiles at startup
-list_model_profiles()               → returns profiles + defaults + provider statuses
-create_model_profile(...)           → creates new profile, stores in DB/JSON
-update_model_profile(id, ...)       → patches existing profile
-delete_model_profile(id)            → removes profile
-update_model_profile_defaults(...)  → sets default profile IDs
-```
+- datasets
+- jobs
+- job events
+- playground runs
+- agent runs
+- model profiles
+- workspace settings
 
-### Dataset Functions
-```
-create_dataset_record(filename, payload, name)  → saves JSONL + runs validation
-list_datasets(validation_status?)               → list with optional filter
-retrieve_dataset_detail(dataset_id)             → full record with validation
-upload_dataset_record_to_openai(dataset_id)     → uploads file to OpenAI API
-upload_dataset_record_to_huggingface(dataset_id)→ uploads to HF Hub
-```
+### JSON fallback mode
 
-### Job Functions
-```
-create_job_record(dataset_id, base_model, ...)  → creates job, starts training process
-list_jobs()                                      → all jobs with provider labels
-retrieve_job_detail(job_id)                      → full job + events + results
-sync_job_record(job_id)                          → refreshes status from provider API
-list_job_events(job_id)                          → event log for a job
-cancel_job_record(job_id)                        → cancels active job
-build_job_download_package(job_id, type)         → creates ZIP for download
-```
+When Postgres is not enabled, state falls back to:
 
-### Inference Functions
-```
-run_model(prompt, model, provider)              → single inference call
-run_playground_prompt(prompt, base_model, ...)  → runs 1 or 2 models, returns both outputs
-```
+- `python_api/data/state.json`
 
-### Agent Functions
-```
-create_agent_run_record(...)        → creates Temporal workflow + DB record
-list_agent_runs()                   → all agent runs
-get_agent_run_detail(run_id)        → full snapshot with steps
-save_agent_run_snapshot(snapshot)   → persists current workflow state
-mark_agent_run_cancelled(run_id)    → cancels workflow + updates DB
-```
+### Dataset storage
 
-### Dashboard
-```
-dashboard_summary()                 → aggregated stats for home page
-```
+Uploaded datasets are stored under:
+
+- `uploads_python/datasets/{dataset_id}/`
+
+### Job storage
+
+Local job artifacts are stored under:
+
+- `uploads_python/jobs/{job_id}/`
+
+### Download safety
+
+The backend restricts local dataset downloads to paths under `uploads_python/datasets`.
+
+The backend restricts local job artifact downloads to paths under `uploads_python/jobs`.
 
 ---
 
-## 12. Agent Orchestration (Temporal)
+## 13. TypeScript and Frontend Helpers
 
-### What Temporal Does
+### `lib/python-api.ts`
 
-Temporal is a durable workflow engine. When you start an agent run:
-1. A `AgentRunWorkflow` is submitted to the Temporal server
-2. The Temporal server persists the workflow state
-3. Even if the Python API crashes and restarts, the workflow continues
-4. The frontend can query workflow state at any time
+Responsible for:
 
-### Workflow State Machine
+- resolving the Python API base URL
+- running fetches to the FastAPI backend
+- normalizing error handling
 
-```
-        ┌──────────────────────┐
-        │         queued       │
-        └──────────┬───────────┘
-                   │
-        ┌──────────▼───────────┐
-        │        running       │◄──────────────┐
-        └──────────┬───────────┘               │
-                   │ agent turn completes       │
-        ┌──────────▼───────────┐               │
-        │  tools executed?     │               │
-        └──────────┬───────────┘               │
-          ┌────────┴──────────┐                │
-   need_wait_seconds?      done?               │
-          │                   │                │
-    ┌─────▼──────┐    ┌───────▼──────┐         │
-    │  waiting   │    │ succeeded or │         │
-    └─────┬──────┘    │   failed     │         │
-          │           └──────────────┘         │
-          └───────────────────────────────────►┘
-              (after sleepSeconds)
-```
+### `lib/model-profiles.ts`
 
-### Agent Tools Available
+Responsible for:
 
-The agent has 8 tools it can call:
+- profile selection helpers
+- sorting profiles
+- keeping local fine-tuning profiles visible even when local setup is incomplete
 
-| Tool | What it does |
-|------|-------------|
-| `list_datasets` | List all available datasets |
-| `get_dataset` | Get full dataset details and validation |
-| `upload_dataset_to_openai` | Upload dataset to OpenAI Files API |
-| `list_jobs` | List all fine-tuning jobs |
-| `create_job` | Create a new fine-tuning job |
-| `sync_job` | Get latest status of a job |
-| `run_playground` | Compare base vs. fine-tuned model |
-| `wait_for_seconds` | Pause 10–300 seconds before next action |
+### `lib/local-training.ts`
 
-### How a Single Agent Turn Works
+Responsible for:
 
-```
-1. Load snapshot (goal, current state, past steps)
-2. Build messages list:
-   - System prompt with instructions + tool definitions
-   - History of steps taken so far
-3. Call agent model (OpenAI or Ollama) with tools enabled
-4. Parse tool_calls from response
-5. Execute each tool in sequence
-6. Add tool results to messages
-7. Call model again with results
-8. Repeat up to 8 loops
-9. Return updated snapshot
-```
+- local training preset definitions
+- preset lookup
+- model-tier explanations such as:
+  - `Low VRAM`
+  - `Balanced`
+  - `Stronger quality`
+  - `Custom`
 
 ---
 
-## 13. Local QLoRA Training
+## 14. Testing
 
-### What QLoRA Is
-
-**QLoRA** = Quantized Low-Rank Adaptation
-
-Instead of fine-tuning all billions of parameters (expensive), it:
-1. Loads the base model in 4-bit precision (uses ~4x less VRAM)
-2. Adds small "LoRA adapter" matrices to specific layers
-3. Only trains those small adapters (~17MB for a 0.5B model)
-4. The result: a small adapter file you apply on top of the base model
-
-### Training Process Step-by-Step
-
-```
-1. API receives POST /jobs with local provider
-
-2. build_local_training_job_config() creates LocalQLoraJobConfig with:
-   - paths for config, status, events, logs, output
-   - hyperparameters (epochs, LR, batch size, lora_r, etc.)
-   - export settings (GGUF, Ollama push)
-
-3. spawn_local_training_job() runs:
-   - Writes config JSON to disk
-   - Spawns subprocess: LOCAL_TRAINING_PYTHON train.py config.json
-   - Returns process PID
-
-4. train.py runs (in .venv-train):
-   a. load_model(base_model, lora_config) — downloads from HF if needed
-   b. prepare_dataset(jsonl_path, tokenizer, eval_ratio)
-   c. SFTTrainer.train() — LoRA training loop
-   d. model.save_pretrained(output_dir/adapter) — saves weights
-   e. Updates status.json at each step
-
-5. Status stages (visible in UI):
-   queued → loading_model → training → evaluating → saving → succeeded
-
-6. If export_gguf=True (requires Unsloth):
-   - Merges adapter into base model
-   - Exports to GGUF format with quantization
-   - If push_to_ollama=True: creates Modelfile + runs "ollama create"
-
-7. resultFilesJson contains paths to:
-   - local_adapter (adapter/ directory)
-   - local_gguf (if exported)
-   - local_metrics (metrics JSON)
-   - local_log (training log)
-```
-
-### Your Completed Job: What You Have
-
-Your job `045ce2858f844539a1d5bea764f2fe3a` produced:
-
-```
-Base model:  Qwen/Qwen2.5-0.5B-Instruct
-Adapter:     17MB LoRA (rank 16, alpha 32)
-Training:    3 epochs, eval_loss=1.99, perplexity=7.33
-GPU used:    GPU index 2
-Duration:    ~9 seconds (12 training records)
-GGUF:        NOT exported (was not enabled)
-
-Files produced:
-  artifacts/adapter/adapter_model.safetensors  (17MB — the weights)
-  artifacts/adapter/adapter_config.json        (LoRA config)
-  artifacts/adapter/tokenizer.json             (tokenizer)
-  artifacts/adapter/chat_template.jinja        (chat format)
-  artifacts/checkpoint-6/                      (mid-training checkpoint)
-  local_train_metrics.json                     (loss, perplexity)
-  local_train_status.json                      (full status)
-  local_train.log                              (stdout from trainer)
-```
-
-### Training Hyperparameters Explained
-
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `num_train_epochs` | 3 | More epochs = fits training data better, risk of overfitting |
-| `learning_rate` | 2e-4 | Higher = faster but less stable. Lower = slower but more stable |
-| `per_device_train_batch_size` | 2 | Higher = faster but needs more VRAM |
-| `gradient_accumulation_steps` | 4 | Simulates larger batch without extra VRAM |
-| `lora_r` | 16 | LoRA rank — higher means more parameters, more capacity |
-| `lora_alpha` | 32 | LoRA scaling factor (usually 2x lora_r) |
-| `lora_dropout` | 0.05 | Regularization to prevent overfitting |
-| `max_seq_length` | 1024 | Max tokens per training sample |
-| `warmup_ratio` | 0.1 | % of steps for learning rate warmup |
-
----
-
-## 14. Data Persistence
-
-### Storage Backend Selection
-
-At startup, `store.py` checks for `DATABASE_URL`:
-- **Found** → uses PostgreSQL with schema `agentic_app`
-- **Not found** → uses `python_api/data/state.json`
-
-### PostgreSQL Schema (7 Tables)
-
-```sql
--- All tables are in the DATABASE_SCHEMA (default: agentic_app)
-
-agentic_datasets
-  dataset_id TEXT PRIMARY KEY
-  name TEXT
-  original_filename TEXT
-  validation_status TEXT
-  payload JSONB        ← full dataset record including validation
-  created_at TIMESTAMPTZ
-  updated_at TIMESTAMPTZ
-
-agentic_jobs
-  job_id TEXT PRIMARY KEY
-  dataset_id TEXT
-  status TEXT
-  base_model TEXT
-  model_provider TEXT
-  payload JSONB        ← progress, events, result files, metrics
-  created_at TIMESTAMPTZ
-  updated_at TIMESTAMPTZ
-
-agentic_job_events
-  event_id TEXT PRIMARY KEY
-  job_id TEXT
-  level TEXT           ← info | warning | error
-  event_type TEXT      ← started | progress | completed | failed
-  payload JSONB
-  created_at TIMESTAMPTZ
-
-agentic_playground_runs
-  run_id TEXT PRIMARY KEY
-  base_model TEXT
-  base_model_provider TEXT
-  fine_tuned_model TEXT
-  payload JSONB        ← base_output, tuned_output
-  created_at TIMESTAMPTZ
-
-agentic_agent_runs
-  run_id TEXT PRIMARY KEY
-  workflow_id TEXT
-  status TEXT
-  base_model TEXT
-  agent_model TEXT
-  payload JSONB        ← steps, snapshot, summary
-  created_at TIMESTAMPTZ
-  updated_at TIMESTAMPTZ
-
-agentic_model_profiles
-  profile_id TEXT PRIMARY KEY
-  name TEXT
-  provider TEXT
-  model TEXT
-  category TEXT
-  payload JSONB
-  created_at TIMESTAMPTZ
-  updated_at TIMESTAMPTZ
-
-agentic_workspace_settings
-  setting_key TEXT PRIMARY KEY
-  setting_value JSONB  ← arbitrary settings by key
-```
-
-### JSON Fallback Structure
-
-When using `python_api/data/state.json`:
-
-```json
-{
-  "datasets": [...],
-  "jobs": [...],
-  "job_events": [...],
-  "playground_runs": [...],
-  "agent_runs": [...],
-  "model_profiles": [...],
-  "model_profile_defaults": {
-    "playgroundBaseProfileId": null,
-    "playgroundCompareProfileId": null,
-    "agentBaseProfileId": null,
-    "agentModelProfileId": null,
-    "jobBaseProfileId": null
-  },
-  "model_profiles_initialized": true
-}
-```
-
-### Thread Safety
-
-The `update_state(mutator)` function uses `STATE_LOCK` (threading.Lock) to prevent concurrent writes from corrupting state. All writes go through this function.
-
----
-
-## 15. TypeScript Types & API Client
-
-### Key Types (`lib/types.ts`)
-
-```typescript
-// Model provider — all supported providers
-type ModelProvider =
-  | "ollama" | "openai" | "huggingface" | "local"
-  | "groq" | "gemini" | "cerebras" | "together";
-
-// Profile categories
-type ModelProfileCategory = "small" | "medium" | "large" | "thinking" | "custom";
-
-// A single model profile (e.g., "Groq Llama 70B")
-type ModelProfile = {
-  id: string;
-  name: string;
-  provider: ModelProvider;
-  providerLabel: string;        // Human-readable (e.g., "Groq")
-  providerConfigured: boolean;  // Is the API key set?
-  supportsInference: boolean;
-  supportsFineTuning: boolean;
-  model: string;                // Exact model ID
-  category: ModelProfileCategory;
-  description: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-// Status of a fine-tuning job
-type FineTuneJobStatus =
-  | "validating_files" | "queued" | "running"
-  | "succeeded" | "failed" | "cancelled" | "paused" | "unknown";
-
-// Validation result for a dataset
-type DatasetValidationSummary = {
-  totalRecords: number;
-  validRecords: number;
-  invalidRecords: number;
-  errors: { line: number; message: string }[];
-  warnings: { line?: number; message: string }[];
-  examples: { line: number; preview: unknown }[];
-};
-```
-
-### API Client (`lib/python-api.ts`)
-
-```typescript
-// Get the Python API base URL (from env or default)
-getPythonApiBaseUrl(): string
-// → reads NEXT_PUBLIC_PYTHON_API_URL or PYTHON_API_URL
-// → defaults to http://127.0.0.1:8001
-
-// Generic fetch wrapper — use this for all API calls
-pythonApiFetch<T>(path: string, init?: RequestInit): Promise<T>
-// → automatically handles error responses
-// → throws Error with message from API error code
-// → returns parsed JSON as type T
-
-// Usage examples:
-const datasets = await pythonApiFetch<Dataset[]>("/datasets");
-const job = await pythonApiFetch<Job>(`/jobs/${id}`);
-await pythonApiFetch("/jobs", { method: "POST", body: JSON.stringify({...}) });
-```
-
----
-
-## 16. Frontend Components
-
-### Reusable UI Components (`components/ui/`)
-
-| Component | File | Usage |
-|-----------|------|-------|
-| `<Button>` | button.tsx | Primary action button (variant: default, ghost, danger) |
-| `<Card>` | card.tsx | Rounded container with padding |
-| `<Input>` | input.tsx | Text input field |
-| `<Textarea>` | textarea.tsx | Multi-line text input |
-| `<ErrorAlert>` | error-alert.tsx | Red error message with title + description |
-| `<LoadingState>` | loading-state.tsx | Skeleton loading (variant: text, list, detail) |
-| `<EmptyState>` | empty-state.tsx | Empty list message with optional action button |
-| `<Breadcrumb>` | breadcrumb.tsx | Navigation trail (e.g., Datasets → My Dataset) |
-| `<JsonPreview>` | json-preview.tsx | Formatted JSON display |
-
-### Layout Components
-
-| Component | File | What it renders |
-|-----------|------|----------------|
-| `<AppShell>` | app-shell.tsx | Main grid: sidebar + header + content |
-| `<Sidebar>` | sidebar.tsx | Left navigation with links and user info |
-| `<Header>` | header.tsx | Top bar with "Upload dataset" and "New run" buttons |
-| `<NavLinks>` | nav-links.tsx | Dashboard, Datasets, Jobs, Models, Playground, Agent |
-
-### Page Client Components
-
-Each page has a client component that handles data fetching and state:
-
-| Component | File | Key State |
-|-----------|------|-----------|
-| `DashboardClient` | dashboard/dashboard-client.tsx | stats, recentActivity |
-| `DatasetsPageClient` | dataset/datasets-page-client.tsx | datasets[] |
-| `DatasetDetailClient` | dataset/dataset-detail-client.tsx | dataset, runtime |
-| `CreateJobForm` | jobs/create-job-form.tsx | datasets[], profiles, form fields |
-| `JobsPageClient` | jobs/jobs-page-client.tsx | jobs[], filter |
-| `JobDetailClient` | jobs/job-detail-client.tsx | job, syncing, polling |
-| `PlaygroundComparison` | playground/playground-comparison.tsx | result |
-| `ModelProfilesSettings` | settings/model-profiles-settings.tsx | data, drafts, tab |
-| `AgentPageClient` | agent/agent-page-client.tsx | runs[], form, runtime |
-
----
-
-## 17. Docker Deployment
-
-### Production Stack (`docker-compose.yml`)
-
-```
-Services started:
-1. postgres      — PostgreSQL 16 database
-2. temporal      — Temporal workflow server (uses postgres)
-3. temporal-ui   — Temporal web UI at http://localhost:8080
-4. python-api    — FastAPI backend at http://localhost:8001
-5. web           — Next.js frontend at http://localhost:3000
-
-Start command:
-  docker compose up --build
-
-Health checks ensure services start in correct order:
-  postgres → temporal → python-api → web
-```
-
-### Dev Stack (`docker-compose.dev.yaml`)
-
-Same services but:
-- Source code mounted as volumes (changes without rebuild)
-- Uses `next dev` for hot reload
-- Slower cold start, instant code updates
+### Frontend / TypeScript tests
 
 ```bash
-docker compose -f docker-compose.dev.yaml up --build
+npm test
 ```
 
-### Important: Ollama with Docker
+Current Vitest coverage includes:
 
-The containers cannot access your host's Ollama directly using `localhost`. Use:
-```env
-OLLAMA_BASE_URL="http://host.docker.internal:11434"
+- JSONL validation helpers
+- jobs helpers
+- model profile sorting
+- local training preset helpers
+
+### Python tests
+
+```bash
+python -m unittest python_api.test_local_fine_tuning python_api.test_dataset_download
 ```
-On Linux, you may need:
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
+
+Current Python test coverage includes:
+
+- local training preflight
+- local training preset defaults
+- GGUF and Ollama warning cases
+- dataset download path safety
+
+---
+
+## 15. Docker and Deployment
+
+Main files:
+
+- `docker-compose.yml`
+- `docker-compose.dev.yaml`
+- `Dockerfile.api`
+- `docker/web-prod.dockerfile`
+
+The Compose stack can include:
+
+- frontend
+- Python API
+- PostgreSQL
+- Temporal
+
+For local feature development, the simplest path is still:
+
+- run the API directly
+- run Next.js directly
+- run Ollama locally
+
+---
+
+## 16. Troubleshooting
+
+### Local training says “needs setup”
+
+Check:
+
+- `LOCAL_TRAINING_ENABLED="1"`
+- `LOCAL_TRAINING_PYTHON` is set
+- the file pointed to by `LOCAL_TRAINING_PYTHON` exists
+- `requirements-local-training.txt` was installed into that interpreter
+
+### No CUDA GPU detected
+
+Check:
+
+- NVIDIA drivers
+- CUDA visibility
+- `torch.cuda.is_available()` from the training venv
+- whether you accidentally configured the wrong training interpreter
+
+### `Unsloth` is missing
+
+This is not fatal.
+
+The app will still train using the slower fallback path, but:
+
+- training may be slower
+- VRAM usage may be higher
+- GGUF export support may be reduced
+
+### Ollama export or registration fails
+
+Check:
+
+- `ollama` CLI is installed
+- `ollama serve` is running
+- `OLLAMA_BASE_URL` is correct
+- `exportGguf` is enabled
+
+### OpenAI or HF features unavailable
+
+Check:
+
+- `OPENAI_API_KEY` for OpenAI managed fine-tuning
+- `HF_TOKEN` for paid Hugging Face Jobs runs
+
+### Dataset download or job download fails
+
+Check:
+
+- the dataset or job still exists on disk
+- the requested path is inside the expected uploads directory
+- the local job actually completed successfully before trying to download the model
+
+---
+
+## 17. Code Map
+
+### Request path for dataset upload
+
+```text
+datasets/new UI
+  -> pythonApiFetch("/datasets")
+  -> python_api/main.py create_dataset
+  -> python_api/services.py create_dataset_record
+  -> python_api/store.py update_state
+```
+
+### Request path for local job creation
+
+```text
+jobs/new UI
+  -> pythonApiFetch("/jobs")
+  -> python_api/main.py create_job
+  -> python_api/services.py create_job_record
+  -> python_api/local_qlora/__init__.py spawn_local_training_job
+  -> python_api/local_qlora/runner.py
+  -> python_api/local_qlora/train.py run_local_qlora_training
+```
+
+### Request path for dataset download
+
+```text
+dataset detail or job detail UI
+  -> GET /datasets/{dataset_id}/download
+  -> python_api/main.py download_dataset
+  -> python_api/services.py build_dataset_download_package
+```
+
+### Request path for model artifact download
+
+```text
+job detail UI
+  -> GET /jobs/{job_id}/download
+  -> python_api/main.py download_job
+  -> python_api/services.py build_job_download_package
+```
+
+### Request path for job monitoring
+
+```text
+job detail UI
+  -> GET /jobs/{job_id}
+  -> POST /jobs/{job_id}/sync
+  -> python_api/services.py sync_job_record
+  -> local status, events, metrics, and artifact files
+```
+
+### Request path for agent runs
+
+```text
+agent page
+  -> POST /agent/runs
+  -> Temporal workflow start
+  -> GET /agent/runs/{run_id}
+  -> live workflow snapshot query
 ```
 
 ---
 
-## 18. Using a Fine-Tuned Model After Training
-
-### What You Have After Training
-
-The adapter (17MB LoRA) is **not a standalone model**. It is a small patch that modifies the base model's behavior. You have two ways to use it:
-
-### Option A: Direct Python Inference (Works Right Now)
-
-```python
-# inference.py
-from peft import AutoPeftModelForCausalLM
-from transformers import AutoTokenizer
-import torch
-
-ADAPTER_PATH = "/mnt/nvme_disk2/User_data/vs95259v/Vikas/project/agentic/uploads_python/jobs/045ce2858f844539a1d5bea764f2fe3a/artifacts/adapter"
-
-tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
-model = AutoPeftModelForCausalLM.from_pretrained(
-    ADAPTER_PATH,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-model.eval()
-
-def ask(prompt: str) -> str:
-    messages = [{"role": "user", "content": prompt}]
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=200, temperature=0.7, do_sample=True)
-    return tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-
-print(ask("Explain machine learning in simple terms"))
-```
-
-Run with: `source .venv-train/bin/activate && python inference.py`
-
-Note: First run downloads ~1GB base model from Hugging Face.
-
-### Option B: Convert to GGUF → Ollama → Use in App
-
-**Step 1: Merge adapter into full model**
-```python
-# merge.py
-from peft import AutoPeftModelForCausalLM
-from transformers import AutoTokenizer
-import torch
-
-ADAPTER = ".../artifacts/adapter"
-MERGED  = ".../artifacts/merged"
-
-model = AutoPeftModelForCausalLM.from_pretrained(ADAPTER, torch_dtype=torch.float16)
-merged = model.merge_and_unload()
-merged.save_pretrained(MERGED)
-AutoTokenizer.from_pretrained(ADAPTER).save_pretrained(MERGED)
-```
-
-**Step 2: Convert to GGUF**
-```bash
-git clone https://github.com/ggerganov/llama.cpp
-pip install -r llama.cpp/requirements.txt
-python llama.cpp/convert_hf_to_gguf.py .../artifacts/merged \
-  --outfile ~/my-model.gguf --outtype q4_k_m
-```
-
-**Step 3: Register with Ollama**
-```bash
-cat > ~/Modelfile << 'EOF'
-FROM /root/my-model.gguf
-PARAMETER temperature 0.7
-PARAMETER stop "<|im_end|>"
-EOF
-
-ollama create my-finetuned-qwen -f ~/Modelfile
-ollama run my-finetuned-qwen "Your prompt here"
-```
-
-**Step 4: Add to app and use in Playground**
-- Go to `/settings` → Model Profiles tab → Create profile
-- Provider: Ollama, Model: `my-finetuned-qwen`, Category: custom
-- Now available in Playground for side-by-side comparison
-
-### Option C: Enable GGUF Export on Next Training Job
-
-When creating the next job, check "Export to GGUF" and "Push to Ollama". The app handles everything automatically.
-
----
-
-## 19. Troubleshooting
-
-### Python API won't start
-
-```bash
-# Check Python venv is activated
-source .venv/bin/activate
-which python  # should point to .venv/bin/python
-
-# Check required packages
-pip install -r requirements.txt
-
-# Check port is not in use
-lsof -i :8001
-```
-
-### "Could not connect to Ollama"
-
-```bash
-# Check Ollama is running
-ollama list
-
-# Start Ollama if not running
-ollama serve &
-
-# Check the base URL matches
-echo $OLLAMA_BASE_URL  # should be http://127.0.0.1:11434
-```
-
-### Local training fails immediately
-
-```bash
-# Check training Python is set correctly
-echo $LOCAL_TRAINING_PYTHON
-
-# Check training deps are installed
-source .venv-train/bin/activate
-python -c "import peft, transformers, trl; print('OK')"
-
-# Check GPU is available
-python -c "import torch; print(torch.cuda.device_count(), 'GPUs')"
-
-# Allow CPU fallback for testing (very slow):
-# LOCAL_TRAINING_ALLOW_CPU_FALLBACK="1"
-```
-
-### "Temporal not connected"
-
-```bash
-# Check TEMPORAL_AUTO_START_DEV_SERVER=1 in .env
-# The Python API auto-starts Temporal when it launches
-
-# Or start Temporal manually:
-temporal server start-dev
-
-# Check Temporal is accessible
-temporal operator namespace list --address 127.0.0.1:7233
-```
-
-### Dataset validation fails
-
-JSONL format must be one of:
-```jsonl
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
-{"instruction": "...", "output": "..."}
-{"instruction": "...", "input": "...", "output": "..."}
-```
-
-Rules:
-- One JSON object per line
-- No blank lines between records
-- UTF-8 encoding
-- Minimum 10 records recommended
-
-### State got corrupted (JSON mode)
-
-```bash
-# Reset to fresh state (loses all data)
-rm python_api/data/state.json
-# Restart API — it recreates automatically
-```
-
----
-
-## 20. Code Map — Who Calls What
-
-This shows the chain of calls for each major action:
-
-### User uploads a dataset
-
-```
-Browser → POST /datasets (multipart)
-  python_api/main.py: upload_dataset()
-    → create_dataset_record(filename, file_data, name)
-      python_api/services.py: validate_jsonl_file(path)
-        → checks each line: messages format OR instruction format
-      → update_state(mutator)
-        python_api/store.py: write to PostgreSQL or state.json
-  → returns DatasetDetail JSON
-```
-
-### User starts a local training job
-
-```
-Browser → POST /jobs { datasetId, modelProvider: "local", numEpochs: 5 }
-  python_api/main.py: create_job()
-    → create_job_record(dataset_id, base_model, ..., num_epochs=5)
-      python_api/services.py:
-        → get_model_provider("local")
-        → ensure_fine_tuning_available("local")
-        → retrieve_dataset_detail(dataset_id)
-        → _build_local_training_job_config(...)
-          python_api/local_qlora/config.py: LocalQLoraJobConfig(...)
-        → ensure_local_training_ready()
-          python_api/local_qlora/__init__.py: check GPU, Python venv
-        → spawn_local_training_job(config)
-          python_api/local_qlora/__init__.py:
-            → config.write() → local_train_config.json
-            → subprocess.Popen([python, train.py, config_path])
-        → update_state(mutator)  → saves job record
-  → returns job JSON with status "queued"
-
-  [In subprocess]:
-  python_api/local_qlora/train.py:
-    → load_model(base_model, lora_config)
-    → prepare_dataset(jsonl_path, tokenizer, eval_ratio)
-    → SFTTrainer.train()  [writes progress to status.json]
-    → model.save_pretrained(output/adapter)
-    → [if export_gguf]: export.py → convert to GGUF
-    → [if push_to_ollama]: create Modelfile, run ollama create
-```
-
-### User runs playground comparison
-
-```
-Browser → POST /playground/run { prompt, baseModel, fineTunedModel }
-  python_api/main.py: run_playground()
-    → run_playground_prompt(prompt, base_model, fine_tuned_model, ...)
-      python_api/services.py:
-        → get_model_client("ollama", base_model)
-          → OpenAI(api_key="ollama", base_url="http://127.0.0.1:11434/v1/")
-        → client.chat.completions.create(model=base_model, messages=[...])
-        → [if fineTunedModel]: same for second model
-        → update_state(mutator)  → saves playground run
-  → returns { baseOutput: "...", tunedOutput: "..." }
-```
-
-### Agent starts autonomous run
-
-```
-Browser → POST /agent/runs { goal: "Fine-tune a coding model" }
-  python_api/main.py: create_agent_run()
-    → create_agent_run_record(...)
-      python_api/services.py:
-        → temporal_runtime.client.start_workflow(AgentRunWorkflow, ...)
-          python_api/agentic_workflow.py: AgentRunWorkflow.run(initial_snapshot)
-            → loop:
-                execute_activity(run_agent_turn_activity, snapshot)
-                  python_api/agentic_activities.py: run_agent_turn_activity()
-                    → call agent model with tools
-                    → execute tools (list_datasets, create_job, sync_job, ...)
-                    → return updated snapshot
-                → check if terminal (succeeded/failed/cancelled)
-                → if sleepSeconds: await asyncio.sleep(seconds)
-                → repeat
-        → update_state(mutator)  → saves agent run record
-
-  [Browser polls]:
-  GET /agent/runs/{id}
-    → get_agent_run_detail(run_id)
-      → temporal_runtime.client.get_workflow_handle().query("snapshot")
-      → returns current snapshot with steps
-```
-
----
-
-## Quick Reference Card
-
-```
-Start dev servers:
-  Terminal 1: source .venv/bin/activate && uvicorn python_api.main:app --port 8001 --reload
-  Terminal 2: npm run dev
-  Terminal 3: ollama serve
-
-Key URLs:
-  App:          http://localhost:3000
-  Python API:   http://localhost:8001
-  API Docs:     http://localhost:8001/docs  (FastAPI Swagger)
-  Temporal UI:  http://localhost:8080 (Docker only)
-
-Most important files:
-  python_api/services.py     ← ALL business logic
-  python_api/main.py         ← ALL API endpoints
-  lib/types.ts               ← ALL TypeScript types
-  lib/python-api.ts          ← Frontend HTTP client
-
-Check if API is running:
-  curl http://localhost:8001/health
-
-Test a model from command line:
-  curl -X POST http://localhost:8001/playground/run \
-    -H "Content-Type: application/json" \
-    -d '{"prompt":"Hello!","baseModel":"qwen3:8b","baseModelProvider":"ollama"}'
-
-View logs for a job:
-  cat uploads_python/jobs/{job_id}/local_train.log
-
-View job status:
-  cat uploads_python/jobs/{job_id}/local_train_status.json | python3 -m json.tool
-```
-
----
-
-*Manual generated for Agentic Fine-Tune App — covers all code, workflows, and operational details.*
+## Final Notes
+
+- The active product flow is `Next.js -> Python API -> provider/runtime/storage`.
+- Local GPU QLoRA is the recommended free fine-tuning path.
+- The docs in this file are intended to match the current code, not the older Prisma-first architecture.
+- If you update providers, endpoints, or training defaults, update both `README.md` and this manual together.

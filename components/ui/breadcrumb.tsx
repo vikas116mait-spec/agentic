@@ -1,10 +1,11 @@
 "use client";
 
+import type { ComponentProps } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Crumb = { label: string; href?: string };
+type Crumb = { label: string; href?: ComponentProps<typeof Link>["href"] };
 
 export function Breadcrumb({ crumbs }: { crumbs: Crumb[] }) {
   return (

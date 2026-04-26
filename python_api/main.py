@@ -17,6 +17,7 @@ from python_api.agentic_workflow import AgentRunWorkflow
 from python_api.services import (
     DEFAULT_AGENT_MODEL,
     DEFAULT_BASE_MODEL,
+    build_dataset_download_package,
     cancel_job_record,
     build_job_download_package,
     create_model_profile,
@@ -32,6 +33,7 @@ from python_api.services import (
     list_datasets,
     list_job_events,
     list_jobs,
+    local_training_runtime_payload,
     provider_is_configured,
     mark_agent_run_cancelled,
     provider_status_payload,
@@ -73,9 +75,10 @@ class CreateJobRequest(BaseModel):
     baseModel: str = DEFAULT_BASE_MODEL
     modelProvider: str | None = None
     hyperparameters: dict[str, Any] | None = None
+    trainingPreset: str | None = "balanced"
     exportGguf: bool = True
     ggufQuantization: str = "q4_k_m"
-    pushToOllama: bool = False
+    pushToOllama: bool = True
     ollamaModelName: str = ""
     numEpochs: int | None = None
     learningRate: float | None = None
@@ -158,6 +161,14 @@ def get_model_profiles():
         return handle_api_error(error)
 
 
+@app.get("/settings/local-training/runtime")
+def get_local_training_runtime():
+    try:
+        return local_training_runtime_payload()
+    except Exception as error:
+        return handle_api_error(error)
+
+
 @app.post("/settings/model-profiles")
 def post_model_profile(request: ModelProfileRequest):
     try:
@@ -229,6 +240,15 @@ def get_dataset(dataset_id: str):
         return handle_api_error(error)
 
 
+@app.get("/datasets/{dataset_id}/download")
+def download_dataset(dataset_id: str):
+    try:
+        package = build_dataset_download_package(dataset_id)
+        return FileResponse(package["path"], media_type=package["mediaType"], filename=package["filename"])
+    except Exception as error:
+        return handle_api_error(error)
+
+
 @app.post("/datasets/{dataset_id}/upload-to-openai")
 def upload_dataset_to_openai(dataset_id: str):
     try:
@@ -253,6 +273,7 @@ def create_job(request: CreateJobRequest):
             request.baseModel,
             request.hyperparameters,
             request.modelProvider,
+            training_preset=request.trainingPreset,
             export_gguf=request.exportGguf,
             gguf_quantization=request.ggufQuantization,
             push_to_ollama=request.pushToOllama,

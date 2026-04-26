@@ -34,7 +34,10 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
   ollama: [
     { value: "qwen3:8b", label: "Qwen 3 8B", hint: "Balanced local default" },
     { value: "qwen3:4b", label: "Qwen 3 4B", hint: "Fast small local model" },
+    { value: "llama3.2:3b", label: "Llama 3.2 3B", hint: "Very fast free local model for lighter machines" },
+    { value: "gemma3:4b", label: "Gemma 3 4B", hint: "Compact Google model with strong quality per size" },
     { value: "llama3.1:8b", label: "Llama 3.1 8B", hint: "General-purpose local model" },
+    { value: "qwen2.5:7b", label: "Qwen 2.5 7B", hint: "Stronger free local model for richer outputs" },
     { value: "deepseek-r1:8b", label: "DeepSeek R1 8B", hint: "Reasoning-heavy local model" }
   ],
   openai: [
@@ -43,17 +46,20 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
     { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", hint: "Paid hosted reasoning model" }
   ],
   huggingface: [
-    { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Tiny free smoke-test model" },
-    { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Smallest public starter model" },
-    { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Best first open-source fine-tune" },
+    { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Paid cloud smoke-test on Hugging Face Jobs" },
+    { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Smaller paid cloud starter model" },
+    { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended paid cloud Qwen fine-tune" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact Microsoft instruct model" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Popular open instruct model" },
-    { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Stronger open-source cloud fine-tune" }
+    { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Stronger paid cloud fine-tune" }
   ],
   local: [
-    { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Fastest free smoke-test model" },
-    { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Fastest free local starter" },
-    { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended first local fine-tune" },
+    { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended free local fine-tune" },
+    { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Lower-VRAM fallback for local training" },
+    { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Fastest smoke-test fallback" },
+    { value: "HuggingFaceTB/SmolLM2-1.7B-Instruct", label: "SmolLM2 1.7B Instruct", hint: "Very small free instruct model for light GPUs" },
+    { value: "ibm-granite/granite-3.1-2b-instruct", label: "Granite 3.1 2B Instruct", hint: "Compact IBM model with good quality for its size" },
+    { value: "tiiuae/Falcon3-3B-Instruct", label: "Falcon 3 3B Instruct", hint: "Another free 3B family for local QLoRA runs" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact model with good quality per GPU" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Strong open instruct model if you want another family" },
     { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Larger free model if you want stronger quality" }
@@ -88,8 +94,8 @@ function defaultModelForProvider(provider: ProviderKey) {
 
 const emptyDraft: ProfileDraft = {
   name: "",
-  provider: "ollama",
-  model: defaultModelForProvider("ollama"),
+  provider: "local",
+  model: defaultModelForProvider("local"),
   category: "custom",
   description: ""
 };
@@ -169,10 +175,10 @@ function ProviderSelect({
       value={value}
       onChange={(event) => onChange(event.target.value as ProviderKey)}
     >
+      <option value="local">Local GPU QLoRA (Recommended free path)</option>
       <option value="ollama">Ollama</option>
       <option value="openai">OpenAI</option>
-      <option value="huggingface">Hugging Face Jobs</option>
-      <option value="local">Local GPU QLoRA</option>
+      <option value="huggingface">Hugging Face Jobs (Paid cloud)</option>
       <option value="groq">Groq (Free tier)</option>
       <option value="gemini">Google Gemini (Free tier)</option>
       <option value="cerebras">Cerebras (Free tier)</option>
@@ -359,8 +365,8 @@ export function ModelProfilesSettings() {
         <div>
           <p className="font-display text-3xl">Models</p>
           <p className="mt-3 text-sm text-black/60">
-            Manage model profiles, workspace defaults, and connected providers. For unpaid experiments, prefer Local GPU
-            QLoRA or the free-tier providers (Groq, Gemini, Cerebras, Together AI).
+            Manage model profiles, workspace defaults, and connected providers. For free fine-tuning, prefer Local GPU
+            QLoRA on your own NVIDIA GPU. Hugging Face Jobs and OpenAI remain available as paid training backends.
           </p>
         </div>
 
@@ -391,7 +397,12 @@ export function ModelProfilesSettings() {
         <Card className="space-y-4">
           <p className="text-xs uppercase tracking-[0.2em] text-black/45">Connected providers</p>
           <div className="grid gap-3 md:grid-cols-2">
-            {data.providers.map((provider) => (
+            {[...data.providers]
+              .sort((left, right) => {
+                const priority = (providerKey: string) => (providerKey === "local" ? 0 : providerKey === "ollama" ? 1 : 2);
+                return priority(left.provider) - priority(right.provider);
+              })
+              .map((provider) => (
               <div key={provider.provider} className="rounded-2xl bg-white p-4">
                 <p className="text-xs uppercase tracking-[0.2em] text-black/45">{provider.label}</p>
                 <p className={cn("mt-2 text-sm font-semibold", provider.configured ? "text-green-700" : "text-amber-600")}>
@@ -401,6 +412,15 @@ export function ModelProfilesSettings() {
                 <p className="mt-2 text-xs text-black/45">
                   {provider.supportsInference ? "Inference" : "Training only"} |{" "}
                   {provider.supportsFineTuning ? "Fine-tuning enabled" : "No fine-tuning"}
+                </p>
+                <p className="mt-2 text-xs text-black/50">
+                  {provider.provider === "local"
+                    ? "Recommended free training path. Requires LOCAL_TRAINING_PYTHON and a CUDA-visible NVIDIA GPU."
+                    : provider.provider === "huggingface"
+                      ? "Paid cloud Jobs backend. Requires HF_TOKEN and prepaid Hugging Face Jobs credits."
+                      : provider.provider === "openai"
+                        ? "Paid managed fine-tuning backend."
+                        : "Use this provider when it matches your runtime or inference workflow."}
                 </p>
               </div>
             ))}

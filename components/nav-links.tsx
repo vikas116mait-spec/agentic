@@ -4,14 +4,15 @@ import type { ComponentType } from "react";
 import type { Route } from "next";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Bot, Database, LayoutDashboard, PlayCircle, Settings2 } from "lucide-react";
+import { Activity, Bot, Boxes, Database, LayoutDashboard, PlayCircle, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const primaryLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/datasets", label: "Datasets", icon: Database },
   { href: "/jobs", label: "Training runs", icon: Activity },
-  { href: "/settings", label: "Models", icon: Settings2 }
+  { href: "/models", label: "Imported models", icon: Boxes },
+  { href: "/settings", label: "Model settings", icon: Settings2 }
 ] as const;
 
 const secondaryLinks = [

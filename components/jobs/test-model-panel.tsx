@@ -23,11 +23,13 @@ export function TestModelPanel({
   modelProvider,
   baseModel,
   ollamaModelName,
+  ollamaRegistered,
 }: {
   fineTunedModel: string;
   modelProvider: string;
   baseModel: string;
   ollamaModelName: string | null;
+  ollamaRegistered: boolean;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -92,7 +94,9 @@ export function TestModelPanel({
           <p className="text-sm font-medium text-black/80">Ollama model name required</p>
           <p className="text-xs text-black/55 leading-relaxed">
             {ollamaModelName
-              ? <>Model <span className="font-mono text-black/70">{ollamaModelName}</span> was pushed to Ollama during training — it is pre-filled below.</>
+              ? ollamaRegistered
+                ? <>Model <span className="font-mono text-black/70">{ollamaModelName}</span> was pushed to Ollama during training and is pre-filled below.</>
+                : <>Suggested Ollama model name <span className="font-mono text-black/70">{ollamaModelName}</span> is pre-filled below. If registration failed, start Ollama and create it manually before testing.</>
               : <>Local adapters run via Ollama. Enter the Ollama model name, or run <span className="font-mono bg-black/6 px-1 py-0.5 rounded">ollama list</span> to find it.</>
             }
           </p>

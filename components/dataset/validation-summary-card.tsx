@@ -22,6 +22,10 @@ type ChatMessage = { role: string; content: string };
 function ExamplePreview({ preview }: { preview: unknown }) {
   if (!preview || typeof preview !== "object") return <JsonPreview value={preview} />;
   const p = preview as Record<string, unknown>;
+  const instruction = typeof p.instruction === "string" ? p.instruction : null;
+  const input =
+    p.input === undefined || p.input === null ? null : String(p.input);
+  const output = typeof p.output === "string" ? p.output : null;
 
   if (Array.isArray(p.messages)) {
     return (
@@ -44,27 +48,27 @@ function ExamplePreview({ preview }: { preview: unknown }) {
     );
   }
 
-  if (typeof p.instruction === "string" || typeof p.output === "string") {
+  if (instruction || output) {
     return (
       <div className="rounded-3xl bg-ink p-4 space-y-2 text-xs text-white/80">
-        {p.instruction && (
+        {instruction ? (
           <p>
             <span className="text-white/50 font-semibold uppercase tracking-wide mr-2">Instruction</span>
-            {String(p.instruction).slice(0, 220)}{String(p.instruction).length > 220 ? "…" : ""}
+            {instruction.slice(0, 220)}{instruction.length > 220 ? "…" : ""}
           </p>
-        )}
-        {p.input && (
+        ) : null}
+        {input ? (
           <p>
             <span className="text-white/50 font-semibold uppercase tracking-wide mr-2">Input</span>
-            {String(p.input).slice(0, 220)}{String(p.input).length > 220 ? "…" : ""}
+            {input.slice(0, 220)}{input.length > 220 ? "…" : ""}
           </p>
-        )}
-        {p.output && (
+        ) : null}
+        {output ? (
           <p>
             <span className="text-brand font-semibold uppercase tracking-wide mr-2">Output</span>
-            {String(p.output).slice(0, 220)}{String(p.output).length > 220 ? "…" : ""}
+            {output.slice(0, 220)}{output.length > 220 ? "…" : ""}
           </p>
-        )}
+        ) : null}
       </div>
     );
   }

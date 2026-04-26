@@ -5,6 +5,57 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+LOCAL_TRAINING_PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
+    "fast": {
+        "num_train_epochs": 1,
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 2,
+        "learning_rate": 2e-4,
+        "save_steps": 100,
+        "logging_steps": 5,
+        "lora_r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "max_seq_length": 768,
+        "warmup_ratio": 0.05,
+        "weight_decay": 0.01,
+    },
+    "balanced": {
+        "num_train_epochs": 3,
+        "per_device_train_batch_size": 2,
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 1e-4,
+        "save_steps": 100,
+        "logging_steps": 10,
+        "lora_r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "max_seq_length": 1024,
+        "warmup_ratio": 0.1,
+        "weight_decay": 0.01,
+    },
+    "quality": {
+        "num_train_epochs": 4,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 8,
+        "learning_rate": 8e-5,
+        "save_steps": 50,
+        "logging_steps": 10,
+        "lora_r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "max_seq_length": 1536,
+        "warmup_ratio": 0.1,
+        "weight_decay": 0.01,
+    },
+}
+
+
+def normalize_training_preset(value: str | None) -> str:
+    if value in LOCAL_TRAINING_PRESET_DEFAULTS:
+        return str(value)
+    return "balanced"
+
 
 @dataclass
 class LocalQLoraJobConfig:
@@ -29,22 +80,10 @@ class LocalQLoraJobConfig:
     gguf_quantization: str = "q4_k_m"
     push_to_ollama: bool = False
     ollama_model_name: str = ""
+    training_preset: str = "balanced"
 
     def resolved_hyperparameters(self) -> dict[str, Any]:
-        defaults = {
-            "num_train_epochs": 3,
-            "per_device_train_batch_size": 2,
-            "gradient_accumulation_steps": 4,
-            "learning_rate": 1e-4,
-            "save_steps": 50,
-            "logging_steps": 10,
-            "lora_r": 16,
-            "lora_alpha": 32,
-            "lora_dropout": 0.05,
-            "max_seq_length": 1024,
-            "warmup_ratio": 0.1,
-            "weight_decay": 0.01,
-        }
+        defaults = LOCAL_TRAINING_PRESET_DEFAULTS[normalize_training_preset(self.training_preset)]
         return {**defaults, **(self.hyperparameters or {})}
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +109,7 @@ class LocalQLoraJobConfig:
             "ggufQuantization": self.gguf_quantization,
             "pushToOllama": self.push_to_ollama,
             "ollamaModelName": self.ollama_model_name,
+            "trainingPreset": normalize_training_preset(self.training_preset),
         }
 
     def write(self) -> str:
@@ -103,4 +143,5 @@ class LocalQLoraJobConfig:
             gguf_quantization=str(payload.get("ggufQuantization", "q4_k_m")),
             push_to_ollama=bool(payload.get("pushToOllama", False)),
             ollama_model_name=str(payload.get("ollamaModelName", "")),
+            training_preset=normalize_training_preset(payload.get("trainingPreset")),
         )
