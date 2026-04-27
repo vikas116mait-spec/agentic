@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -376,6 +377,18 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
         trainer.model.save_pretrained(model_output_path)
         tokenizer.save_pretrained(model_output_path)
 
+        # Clean up the HF Trainer scratch directory (intermediate checkpoints,
+        # auto-generated README, etc). Safe because the final adapter has
+        # already been copied to `model_output_path` above. Older jobs whose
+        # `model_output_path` sat inside `output_dir` are left untouched.
+        try:
+            trainer_scratch = Path(config.output_dir).resolve()
+            final_adapter = Path(model_output_path).resolve()
+            if trainer_scratch != final_adapter and trainer_scratch not in final_adapter.parents:
+                shutil.rmtree(trainer_scratch, ignore_errors=True)
+        except Exception:
+            pass
+
         # ── GGUF export (only available via Unsloth) ──────────────────────────
         gguf_path: str | None = None
         modelfile_path: str | None = None
@@ -405,7 +418,8 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                         f"Exporting to GGUF format ({config.gguf_quantization}).",
                         event_type="gguf_export_started",
                     )
-                    gguf_path = export_gguf(trainer.model, tokenizer, model_output_path, config.gguf_quantization)
+                    gguf_export_root = Path(config.working_dir)
+                    gguf_path = export_gguf(trainer.model, tokenizer, gguf_export_root, config.gguf_quantization)
                     modelfile_path = write_ollama_modelfile(gguf_path)
                     append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
 

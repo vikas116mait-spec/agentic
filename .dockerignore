@@ -1,17 +1,50 @@
+# VCS + editor state
 .git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.DS_Store
+
+# Next.js build output (not needed by the Python image; Vercel rebuilds it)
 .next
-.venv
-node_modules
-coverage
+out
+build
 dist
+coverage
+tsconfig.tsbuildinfo
+
+# Node toolchain
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python toolchain
+.venv
+venv
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Runtime data + logs (keep these OUT of the image so a rebuild can't
+# accidentally ship a customer's datasets/models/state to another host).
+uploads_python
+python_api/data
 dev.log
 dev.err.log
 python-api.log
 python-api.err.log
-uploads_python
-python_api/data
+
+# Secrets
 .env
 .env.local
-*.pyc
-__pycache__/
-tsconfig.tsbuildinfo
+.env.*.local
+
+# Docs that don't need to ship in the image
+*.md
+!README.md

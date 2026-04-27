@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 import json
+import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -12,21 +15,50 @@ from python_api.env import ensure_env_loaded
 
 try:
     import psycopg2
+    from psycopg2 import pool as psycopg2_pool
     from psycopg2 import sql
 except ImportError:  # pragma: no cover
     psycopg2 = None
+    psycopg2_pool = None
     sql = None
+
+
+logger = logging.getLogger(__name__)
 
 ensure_env_loaded()
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "python_api" / "data"
+
+
+def _resolve_root(env_name: str, default: Path) -> Path:
+    """Resolve a configurable filesystem root.
+
+    Relative paths are resolved against the repo root; absolute paths are
+    honoured as-is. Exists so Docker/Fly deployments can redirect state and
+    uploads to a mounted volume (e.g. AGENTIC_DATA_DIR=/data/python_api).
+    """
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return default
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    return path
+
+
+DATA_DIR = _resolve_root("AGENTIC_DATA_DIR", ROOT / "python_api" / "data")
 STATE_FILE = DATA_DIR / "state.json"
-UPLOADS_DIR = ROOT / "uploads_python"
+UPLOADS_DIR = _resolve_root("AGENTIC_UPLOADS_DIR", ROOT / "uploads_python")
 TEMPORAL_CACHE_DIR = DATA_DIR / "temporal"
 TEMPORAL_DB_FILE = DATA_DIR / "temporal-dev.db"
-STATE_LOCK = threading.Lock()
+JOBS_DIR = UPLOADS_DIR / "jobs"
+DATASETS_DIR = UPLOADS_DIR / "datasets"
+
+_WRITE_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
+_STATE_CACHE: dict[str, Any] = {"state": None, "expires_at": 0.0}
+_STATE_CACHE_STATS = {"hits": 0, "misses": 0}
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DATABASE_SCHEMA = (os.environ.get("DATABASE_SCHEMA") or "agentic_app").strip() or "agentic_app"
@@ -90,6 +122,8 @@ POSTGRES_SETTINGS_TABLE = "agentic_workspace_settings"
 POSTGRES_SETTINGS_KEYS = {"model_profile_defaults", "model_profiles_initialized"}
 
 _POSTGRES_READY = False
+_POSTGRES_POOL: Any = None
+_POSTGRES_POOL_LOCK = threading.Lock()
 
 
 def utc_now_iso() -> str:
@@ -138,8 +172,83 @@ def ensure_paths() -> None:
         STATE_FILE.write_text(json.dumps(empty_state(), indent=2), encoding="utf-8")
 
 
+def _postgres_pool_bounds() -> tuple[int, int]:
+    try:
+        min_size = max(int(os.environ.get("DATABASE_MIN_POOL_SIZE") or "1"), 1)
+    except ValueError:
+        min_size = 1
+    try:
+        max_size = max(int(os.environ.get("DATABASE_MAX_POOL_SIZE") or "5"), min_size)
+    except ValueError:
+        max_size = max(min_size, 5)
+    return min_size, max_size
+
+
+def _get_postgres_pool():
+    """Lazily create (and memoize) a thread-safe connection pool."""
+    global _POSTGRES_POOL
+    if _POSTGRES_POOL is not None:
+        return _POSTGRES_POOL
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is None:
+            min_size, max_size = _postgres_pool_bounds()
+            _POSTGRES_POOL = psycopg2_pool.ThreadedConnectionPool(
+                min_size,
+                max_size,
+                dsn=DATABASE_URL,
+            )
+            logger.info(
+                "Initialised Postgres connection pool (min=%s, max=%s).",
+                min_size,
+                max_size,
+            )
+    return _POSTGRES_POOL
+
+
+def close_postgres_pool() -> None:
+    """Close all pooled connections (use on application shutdown)."""
+    global _POSTGRES_POOL
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is not None:
+            try:
+                _POSTGRES_POOL.closeall()
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("Failed to close Postgres pool cleanly.")
+            _POSTGRES_POOL = None
+
+
+@contextmanager
 def _connect_postgres():
-    return psycopg2.connect(DATABASE_URL)
+    """Check out a pooled Postgres connection.
+
+    On normal exit the transaction is committed and the connection is returned
+    to the pool. On exception it is rolled back; broken connections are closed
+    rather than returned so a stale handle cannot re-enter the pool.
+    """
+    pool = _get_postgres_pool()
+    connection = pool.getconn()
+    broken = False
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        broken = True
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            if broken or getattr(connection, "closed", 1):
+                pool.putconn(connection, close=True)
+            else:
+                pool.putconn(connection)
+        except Exception:  # pragma: no cover - defensive
+            try:
+                connection.close()
+            except Exception:
+                pass
 
 
 def _ensure_postgres_storage() -> None:
@@ -196,6 +305,47 @@ def _table_identifier(table_name: str):
     return sql.SQL("{}.{}").format(sql.Identifier(DATABASE_SCHEMA), sql.Identifier(table_name))
 
 
+def _coerce_jsonb(value: Any) -> Any:
+    """Normalise a JSONB column value to a Python object.
+
+    psycopg2's default adapter already returns Python dicts/lists for JSONB
+    columns, but some distro builds or connection settings return the raw
+    text. Handle both so the caller never has to care.
+    """
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        value = bytes(value).decode("utf-8")
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _cache_ttl_s() -> float:
+    try:
+        raw = int(os.environ.get("DATABASE_STATE_CACHE_TTL_MS") or "1000")
+    except ValueError:
+        return 1.0
+    return max(raw, 0) / 1000.0
+
+
+def _invalidate_state_cache() -> None:
+    with _CACHE_LOCK:
+        _STATE_CACHE["state"] = None
+        _STATE_CACHE["expires_at"] = 0.0
+
+
+def state_cache_stats() -> dict[str, int]:
+    """Return a snapshot of cache hit/miss counters (for /health)."""
+    with _CACHE_LOCK:
+        ttl_active = bool(_STATE_CACHE["state"]) and _STATE_CACHE["expires_at"] > time.monotonic()
+        return {
+            "hits": _STATE_CACHE_STATS["hits"],
+            "misses": _STATE_CACHE_STATS["misses"],
+            "populated": 1 if ttl_active else 0,
+        }
+
+
 def _load_state_from_postgres() -> State:
     _ensure_postgres_storage()
     state = empty_state()
@@ -204,14 +354,18 @@ def _load_state_from_postgres() -> State:
         with connection.cursor() as cursor:
             for collection_name, spec in POSTGRES_COLLECTION_SPECS.items():
                 cursor.execute(
-                    sql.SQL("SELECT payload::text FROM {}").format(_table_identifier(spec["table"]))
+                    sql.SQL("SELECT payload FROM {}").format(_table_identifier(spec["table"]))
                 )
-                state[collection_name] = [json.loads(row[0]) for row in cursor.fetchall()]
+                state[collection_name] = [_coerce_jsonb(row[0]) for row in cursor.fetchall()]
 
             cursor.execute(
-                sql.SQL("SELECT setting_key, setting_value::text FROM {}").format(_table_identifier(POSTGRES_SETTINGS_TABLE))
+                sql.SQL("SELECT setting_key, setting_value FROM {}").format(_table_identifier(POSTGRES_SETTINGS_TABLE))
             )
-            settings = {row[0]: json.loads(row[1]) for row in cursor.fetchall() if row[0] in POSTGRES_SETTINGS_KEYS}
+            settings = {
+                row[0]: _coerce_jsonb(row[1])
+                for row in cursor.fetchall()
+                if row[0] in POSTGRES_SETTINGS_KEYS
+            }
             state["model_profile_defaults"] = settings.get("model_profile_defaults", {})
             state["model_profiles_initialized"] = settings.get("model_profiles_initialized", False)
 
@@ -278,21 +432,41 @@ def _persist_state_to_postgres(state: State) -> None:
 
 def load_state() -> State:
     ensure_paths()
-    with STATE_LOCK:
-        if _postgres_enabled():
-            return _load_state_from_postgres()
+    if _postgres_enabled():
+        ttl = _cache_ttl_s()
+        if ttl > 0:
+            with _CACHE_LOCK:
+                snapshot = _STATE_CACHE["state"]
+                if snapshot is not None and _STATE_CACHE["expires_at"] > time.monotonic():
+                    _STATE_CACHE_STATS["hits"] += 1
+                    return deepcopy(snapshot)
+                _STATE_CACHE_STATS["misses"] += 1
 
+        state = _load_state_from_postgres()
+
+        if ttl > 0:
+            with _CACHE_LOCK:
+                _STATE_CACHE["state"] = deepcopy(state)
+                _STATE_CACHE["expires_at"] = time.monotonic() + ttl
+        return state
+
+    # JSON-file path: no cache, readers are cheap and already local.
+    with _WRITE_LOCK:
         raw_state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         return _normalize_state(raw_state)
 
 
 def update_state(mutator: Callable[[State], StateMutator]) -> StateMutator:
     ensure_paths()
-    with STATE_LOCK:
+    with _WRITE_LOCK:
         if _postgres_enabled():
+            # Always refetch from Postgres on the write path so the mutator
+            # sees a fresh, uncached view even if another writer updated the
+            # DB from outside this process.
             state = _load_state_from_postgres()
             result = mutator(state)
             _persist_state_to_postgres(state)
+            _invalidate_state_cache()
             return result
 
         raw_state = json.loads(STATE_FILE.read_text(encoding="utf-8"))

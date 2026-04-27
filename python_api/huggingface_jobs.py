@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from python_api.env import ensure_env_loaded
 from python_api.errors import ApiError
-from python_api.store import ROOT, utc_now_iso
+from python_api.store import JOBS_DIR, utc_now_iso
 
 try:
     from huggingface_hub import (
@@ -180,7 +180,7 @@ def upload_dataset_to_huggingface(dataset: dict[str, Any]) -> dict[str, str]:
 
 
 def _training_script_path(job_id: str) -> Path:
-    jobs_dir = ROOT / "uploads_python" / "jobs" / job_id
+    jobs_dir = JOBS_DIR / job_id
     jobs_dir.mkdir(parents=True, exist_ok=True)
     return jobs_dir / "hf_train_sft.py"
 

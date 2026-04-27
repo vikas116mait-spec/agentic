@@ -783,13 +783,23 @@ The job creation UI now defensively resets `pushToOllama` to `false` when `expor
 
 Inside `uploads_python/jobs/{job_id}/`:
 
+- `README.md` - auto-generated index of this folder
 - `local_train_config.json`
 - `local_train_status.json`
 - `local_train_events.jsonl`
 - `local_train.log`
 - `local_train_metrics.json`
-- `artifacts/adapter/`
-- optional `artifacts/adapter/gguf/*.gguf`
+- `adapter/` - LoRA adapter + tokenizer
+- optional `gguf/*.gguf` + `gguf/Modelfile`
+
+The HuggingFace Trainer scratch directory (`artifacts/` with intermediate
+`checkpoint-N/` folders) is deleted automatically once the final adapter is
+saved, so only the files above are persisted. Download bundles are built on
+demand and never kept inside the job folder.
+
+Older jobs trained before this cleanup was introduced continue to work; they
+keep their `artifacts/adapter/` layout and all download + inference paths
+resolve correctly for both layouts.
 
 ---
 
@@ -1026,6 +1036,14 @@ Check:
 - `ollama serve` is running
 - `OLLAMA_BASE_URL` is correct
 - `exportGguf` is enabled
+
+### Playground prompt returns `CUDA error: out of memory`
+
+Ollama is pinned to a GPU that is full. Enable adaptive GPU selection by
+setting `OLLAMA_AUTO_MANAGE="1"` and completing the one-time admin setup
+documented in `README.md` under "Adaptive Ollama GPU". The backend will then
+rebalance Ollama onto the freest GPU on demand, and the Playground exposes a
+`Move to freest GPU` button that forces a rebalance.
 
 ### OpenAI or HF features unavailable
 

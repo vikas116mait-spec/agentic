@@ -1,0 +1,66 @@
+# Fly.io manifest for the Python API (FastAPI + Ollama + local QLoRA).
+#
+# First-time setup:
+#   1. fly auth login
+#   2. Edit `app = "..."` below to a unique name you own on Fly.
+#   3. fly volumes create agentic_data --region <same as primary_region> --size 50 --vm-gpu-kind a10
+#   4. fly secrets set \
+#        DATABASE_URL="<neon pooled url>" \
+#        OPENAI_API_KEY="<key>" \
+#        HF_TOKEN="<optional>" \
+#        ALLOWED_ORIGINS="https://<your-vercel-domain>"
+#   5. fly deploy
+#
+# Subsequent deploys: just `fly deploy`.
+
+app = "agentic-api"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "python_api/Dockerfile"
+
+[env]
+  PORT = "8080"
+  # The Python API reads these via python_api/store.py to redirect state
+  # and uploads onto the mounted volume at /data.
+  AGENTIC_DATA_DIR = "/data/python_api"
+  AGENTIC_UPLOADS_DIR = "/data/uploads_python"
+  # Ollama is colocated in the container; it listens on localhost only.
+  OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+  OLLAMA_MODELS = "/data/ollama"
+  # Fly containers have no systemd, so keep adaptive GPU management off.
+  OLLAMA_AUTO_MANAGE = "0"
+  DATABASE_SCHEMA = "agentic_app"
+  DATABASE_MAX_POOL_SIZE = "5"
+  # The single uvicorn worker model means the in-process state cache is safe.
+  DATABASE_STATE_CACHE_TTL_MS = "1000"
+
+[[mounts]]
+  source = "agentic_data"
+  destination = "/data"
+  initial_size = "50gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # switch to "off" if you want 24/7 uptime
+  auto_start_machines = true
+  min_machines_running = 0      # raise to 1 for instant wake
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+    timeout = "5s"
+
+# Single GPU machine; request an A10 by default. Swap for l40s / a100-80gb
+# if you need more VRAM. See https://fly.io/docs/gpus/gpu-quickstart/.
+[[vm]]
+  size = "a10"
+  memory = "16gb"
+  cpu_kind = "performance"
+  cpus = 4

@@ -11,9 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from python_api import ollama_manager
 from python_api.env import ensure_env_loaded
 from python_api.errors import ApiError
 from python_api.agentic_workflow import AgentRunWorkflow
+from python_api.store import close_postgres_pool, state_cache_stats
 from python_api.services import (
     DEFAULT_AGENT_MODEL,
     DEFAULT_BASE_MODEL,
@@ -128,12 +130,21 @@ async def lifespan(_: FastAPI):
         if not startup_task.done():
             startup_task.cancel()
         await temporal_runtime.stop()
+        close_postgres_pool()
+
+
+def _allowed_origins() -> list[str]:
+    raw = os.environ.get("ALLOWED_ORIGINS", "*").strip()
+    if not raw or raw == "*":
+        return ["*"]
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or ["*"]
 
 
 app = FastAPI(title="Agentic Python API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,7 +153,11 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "temporal": temporal_runtime.status_payload()}
+    return {
+        "status": "ok",
+        "temporal": temporal_runtime.status_payload(),
+        "stateCache": state_cache_stats(),
+    }
 
 
 @app.get("/dashboard/summary")
@@ -211,6 +226,26 @@ def remove_model_profile(profile_id: str):
     try:
         return delete_model_profile(profile_id)
     except Exception as error:
+        return handle_api_error(error)
+
+
+@app.get("/settings/gpu/inventory")
+def get_gpu_inventory_endpoint():
+    try:
+        return ollama_manager.gpu_status_payload()
+    except Exception as error:  # pragma: no cover - defensive
+        return handle_api_error(error)
+
+
+@app.post("/settings/gpu/rebalance-ollama")
+def post_rebalance_ollama():
+    try:
+        result = ollama_manager.ensure_ollama_on_free_gpu(force=True)
+        status = ollama_manager.gpu_status_payload()
+        return {"result": result, "status": status}
+    except ollama_manager.OllamaManageUnavailable as error:
+        return error_response("OLLAMA_AUTO_MANAGE_UNAVAILABLE", str(error), 503)
+    except Exception as error:  # pragma: no cover - defensive
         return handle_api_error(error)
 
 
