@@ -46,11 +46,22 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt \
     && python -m pip install -r requirements-local-training.txt
 
+# Vendored llama.cpp conversion script for `scripts/recover_ollama.py`. Pinned
+# to the upstream `master` tip at build time; we only need a single script, so
+# a shallow clone keeps the image small. Rebuilding the image refreshes this.
+ARG LLAMA_CPP_REPO=https://github.com/ggerganov/llama.cpp.git
+ARG LLAMA_CPP_REF=master
+ENV LLAMA_CPP_CONVERT_SCRIPT=/app/third_party/llama.cpp/convert_hf_to_gguf.py
+RUN git clone --depth=1 --branch "${LLAMA_CPP_REF}" "${LLAMA_CPP_REPO}" /app/third_party/llama.cpp \
+    && rm -rf /app/third_party/llama.cpp/.git
+
 COPY python_api ./python_api
 COPY prisma ./prisma
+COPY scripts ./scripts
 
 COPY python_api/start.sh /usr/local/bin/start-agentic.sh
-RUN chmod +x /usr/local/bin/start-agentic.sh
+RUN chmod +x /usr/local/bin/start-agentic.sh \
+    && chmod +x /app/scripts/*.py 2>/dev/null || true
 
 EXPOSE 8080
 VOLUME ["/data"]

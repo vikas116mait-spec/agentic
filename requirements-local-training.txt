@@ -6,3 +6,7 @@ accelerate>=0.31.0,<2.0.0
 bitsandbytes>=0.43.0,<1.0.0
 python-dotenv>=1.0.1,<2.0.0
 unsloth
+# Needed by `scripts/recover_ollama.py` and llama.cpp's `convert_hf_to_gguf.py`
+# so we can re-export a trained LoRA -> GGUF and register it with Ollama when
+# the Unsloth-bundled GGUF pipeline fails at training time.
+gguf>=0.10.0,<1.0.0

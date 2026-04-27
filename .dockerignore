@@ -31,6 +31,10 @@ __pycache__/
 .mypy_cache
 .ruff_cache
 
+# Third-party clones (the Dockerfile fetches llama.cpp during build; we do not
+# want the host's local clone to leak into the build context).
+third_party
+
 # Runtime data + logs (keep these OUT of the image so a rebuild can't
 # accidentally ship a customer's datasets/models/state to another host).
 uploads_python

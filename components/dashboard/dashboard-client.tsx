@@ -18,7 +18,7 @@ import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { LoadingState } from "@/components/ui/loading-state";
 import { StatusBadge } from "@/components/status-badge";
-import { getPythonApiBaseUrl, pythonApiFetch } from "@/lib/python-api";
+import { pythonApiFetch } from "@/lib/python-api";
 import { formatDate } from "@/lib/utils";
 
 export type DashboardSummary = {
@@ -108,7 +108,15 @@ export function DashboardClient({
   }, [initialData]);
 
   if (error) {
-    return <ErrorAlert title="Cannot reach the API" description={`Start the Python service at ${getPythonApiBaseUrl()}. ${error}`} />;
+    return (
+      <ErrorAlert
+        title="Cannot reach the API"
+        description={
+          `${error} Make sure the Python FastAPI service is running and that ` +
+          `PYTHON_API_URL in your Next.js server environment points at it.`
+        }
+      />
+    );
   }
 
   if (!data) {

@@ -320,6 +320,117 @@ def _run_ollama_cli(*args: str) -> subprocess.CompletedProcess[str]:
         ) from error
 
 
+def _find_local_tuned_job_for_ollama_name(normalized_model: str) -> dict[str, Any] | None:
+    """Return the most recent local training job whose registered Ollama name matches.
+
+    Locally fine-tuned models are registered with the user's Ollama server via
+    `ollama create`; they are never published to the Ollama registry, so a
+    registry pull can never succeed for them. We use this lookup to distinguish
+    "unknown registry model" from "known local tuned model that isn't registered
+    with the Ollama instance the backend is talking to".
+    """
+
+    if not normalized_model:
+        return None
+    try:
+        state = load_state()
+    except Exception:  # pragma: no cover - defensive: never break pull path on state errors
+        return None
+
+    matches = [
+        job
+        for job in state.get("jobs", [])
+        if (job.get("ollamaModelName") or "").strip() == normalized_model
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda job: job.get("updatedAt") or job.get("createdAt") or "", reverse=True)
+    return matches[0]
+
+
+def _extract_local_artifact_path(job: dict[str, Any], artifact_type: str) -> str | None:
+    for artifact in job.get("resultFilesJson") or []:
+        if isinstance(artifact, dict) and artifact.get("type") == artifact_type:
+            path = artifact.get("path")
+            if isinstance(path, str) and path.strip():
+                return path.strip()
+    return None
+
+
+def _extract_local_modelfile_path(job: dict[str, Any]) -> str | None:
+    return _extract_local_artifact_path(job, "local_modelfile")
+
+
+def _candidate_job_dirs(job: dict[str, Any]) -> list[Path]:
+    """Return plausible on-disk roots for a job's artifacts.
+
+    Covers environments where JOBS_DIR was relocated via `AGENTIC_UPLOADS_DIR`
+    between training and now, by consulting any recorded absolute paths first.
+    """
+
+    candidates: list[Path] = []
+    for field in ("localArtifactsPath", "localStatusPath", "localConfigPath", "localLogPath"):
+        raw = job.get(field)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parent = Path(raw).expanduser().resolve().parent
+            except OSError:
+                continue
+            if parent and parent not in candidates:
+                candidates.append(parent)
+    job_id = (job.get("id") or "").strip()
+    if job_id:
+        try:
+            derived = (JOBS_DIR / job_id).resolve()
+            if derived not in candidates:
+                candidates.append(derived)
+        except OSError:
+            pass
+    return candidates
+
+
+def _find_on_disk_modelfile(job: dict[str, Any]) -> str | None:
+    """Locate a Modelfile on disk for this job, even if `resultFilesJson` is stale."""
+
+    recorded = _extract_local_modelfile_path(job)
+    if recorded and Path(recorded).is_file():
+        return recorded
+
+    for root in _candidate_job_dirs(job):
+        if not root.exists() or not root.is_dir():
+            continue
+        try:
+            for candidate in root.rglob("Modelfile"):
+                if candidate.is_file():
+                    return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _extract_training_warning_messages(job: dict[str, Any]) -> list[str]:
+    progress = job.get("progressJson")
+    if not isinstance(progress, dict):
+        return []
+    warnings = progress.get("warnings") or []
+    messages: list[str] = []
+    for entry in warnings:
+        if isinstance(entry, str) and entry.strip():
+            messages.append(entry.strip())
+        elif isinstance(entry, dict):
+            text = entry.get("message") or entry.get("warning") or entry.get("detail")
+            if isinstance(text, str) and text.strip():
+                messages.append(text.strip())
+    return messages
+
+
+def _ollama_host_hint() -> str:
+    parsed = urlparse(_normalize_ollama_base_url(os.environ.get("OLLAMA_BASE_URL")))
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return DEFAULT_OLLAMA_BASE_URL
+
+
 def ensure_ollama_model_available(model: str) -> None:
     normalized_model = (model or "").strip()
     if not normalized_model or normalized_model in _READY_OLLAMA_MODELS:
@@ -330,12 +441,109 @@ def ensure_ollama_model_available(model: str) -> None:
         _READY_OLLAMA_MODELS.add(normalized_model)
         return
 
+    # If this name corresponds to a locally fine-tuned job, skip the registry
+    # pull (which can never succeed) and try to re-register it from an on-disk
+    # Modelfile. Fall back to an actionable error if that isn't possible.
+    local_job = _find_local_tuned_job_for_ollama_name(normalized_model)
+    if local_job is not None:
+        host_hint = _ollama_host_hint()
+        modelfile_path = _find_on_disk_modelfile(local_job)
+
+        if modelfile_path:
+            logger.info(
+                "Ollama model %s not found on %s; auto-registering from local Modelfile %s.",
+                normalized_model,
+                host_hint,
+                modelfile_path,
+            )
+            create_result = _run_ollama_cli("create", normalized_model, "-f", modelfile_path)
+            if create_result.returncode == 0:
+                _READY_OLLAMA_MODELS.add(normalized_model)
+                return
+            create_message = (
+                create_result.stderr.strip()
+                or create_result.stdout.strip()
+                or "unknown error"
+            )
+            raise ApiError(
+                "MODEL_PROVIDER_NOT_CONFIGURED",
+                (
+                    f"Fine-tuned model `{normalized_model}` is not registered with the Ollama server at "
+                    f"{host_hint} and auto-registration from `{modelfile_path}` failed: {create_message}. "
+                    f"Register it manually with: `ollama create {normalized_model} -f {modelfile_path}`."
+                ),
+                503,
+            )
+
+        # No Modelfile anywhere. Build the most informative error we can so the
+        # user understands *why* the model cannot be loaded.
+        progress = local_job.get("progressJson") if isinstance(local_job.get("progressJson"), dict) else {}
+        ollama_registered = bool(progress.get("ollamaRegistered"))
+        training_warnings = _extract_training_warning_messages(local_job)
+        adapter_path = _extract_local_artifact_path(local_job, "local_adapter")
+        gguf_path = _extract_local_artifact_path(local_job, "local_gguf")
+        status = (local_job.get("status") or "").strip() or "unknown"
+
+        if ollama_registered:
+            # Was registered at some point but the Modelfile / Ollama blob has
+            # since been deleted and we have nothing to re-register from.
+            reason = (
+                f"It was previously registered with Ollama, but the Modelfile artifact is "
+                f"no longer on disk, so auto-re-registration is not possible."
+            )
+        else:
+            failure_detail = "; ".join(training_warnings[:3]) if training_warnings else (
+                "GGUF export or Ollama registration did not complete."
+            )
+            reason = (
+                f"Ollama registration was never completed during training ({failure_detail}), "
+                f"so there is nothing to load."
+            )
+
+        recovery_hints: list[str] = []
+        if gguf_path:
+            recovery_hints.append(
+                f"Run `ollama create {normalized_model} -f <Modelfile>` where `<Modelfile>` points "
+                f"at (or is generated for) the existing GGUF at `{gguf_path}`."
+            )
+        elif adapter_path:
+            recovery_hints.append(
+                f"The LoRA adapter is still saved at `{adapter_path}`. Re-run the job with GGUF "
+                f"export enabled (or manually export the adapter to GGUF) and then register it with "
+                f"`ollama create {normalized_model} -f <path-to-new-Modelfile>`."
+            )
+        else:
+            recovery_hints.append(
+                "Retrain the model with `pushToOllama=true` and ensure Unsloth is installed in "
+                "LOCAL_TRAINING_PYTHON so the GGUF export step can complete."
+            )
+        recovery_hints.append(
+            f"Or verify OLLAMA_BASE_URL ({host_hint}) points at the Ollama server where the model "
+            f"was originally created."
+        )
+
+        raise ApiError(
+            "MODEL_PROVIDER_NOT_CONFIGURED",
+            (
+                f"Fine-tuned model `{normalized_model}` cannot be loaded from the Ollama server at "
+                f"{host_hint} (training job status: {status}, ollamaRegistered: {ollama_registered}). "
+                f"{reason} Next steps: " + " ".join(recovery_hints)
+            ),
+            503,
+        )
+
     pull_result = _run_ollama_cli("pull", normalized_model)
     if pull_result.returncode != 0:
         message = pull_result.stderr.strip() or pull_result.stdout.strip() or show_result.stderr.strip() or show_result.stdout.strip()
+        host_hint = _ollama_host_hint()
         raise ApiError(
             "MODEL_PROVIDER_NOT_CONFIGURED",
-            f"Could not pull Ollama model `{normalized_model}` automatically. {message}".strip(),
+            (
+                f"Could not pull Ollama model `{normalized_model}` from the registry via the Ollama "
+                f"server at {host_hint}. {message} "
+                f"If this is a locally fine-tuned model, register it with "
+                f"`ollama create {normalized_model} -f <path>/Modelfile` first."
+            ).strip(),
             503,
         )
 

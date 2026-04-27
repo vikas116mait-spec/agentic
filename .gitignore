@@ -9,6 +9,7 @@ uploads_python
 .venv
 .venv-train
 .codex
+third_party/
 __pycache__/
 *.pyc
 *.tsbuildinfo
