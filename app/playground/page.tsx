@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { PlaygroundComparison } from "@/components/playground/playground-comparison";
 import { Button } from "@/components/ui/button";
@@ -83,10 +84,17 @@ export default function PlaygroundPage() {
           <p className="text-xs uppercase tracking-[0.2em] text-black/45">Profile-driven playground</p>
           <p className="font-display text-3xl">Playground</p>
           <p className="mt-2 text-sm text-black/60">
-            Compare two saved model profiles side by side using the same prompt. Import already fine-tuned models from
-            the Imported Models page, then update workspace defaults in Model Settings when your preferred profiles
-            change.
+            Compare two saved model profiles side by side using the same prompt. Need a tuned model here? Add it from
+            My models, then come back and select it here.
           </p>
+        </div>
+
+        <div className="rounded-2xl border border-brand/15 bg-brand/5 p-4 text-sm text-black/70">
+          Need to use a fine-tuned model that already exists?{" "}
+          <Link href="/models" className="font-semibold text-brand hover:opacity-80">
+            Open My models
+          </Link>{" "}
+          to save the model tag or hosted model id first.
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">

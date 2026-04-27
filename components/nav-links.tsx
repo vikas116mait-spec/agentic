@@ -11,7 +11,7 @@ const primaryLinks = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/datasets", label: "Datasets", icon: Database },
   { href: "/jobs", label: "Training runs", icon: Activity },
-  { href: "/models", label: "Imported models", icon: Boxes },
+  { href: "/models", label: "My models", icon: Boxes },
   { href: "/settings", label: "Model settings", icon: Settings2 }
 ] as const;
 
