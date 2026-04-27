@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, Cloud, Cpu, Sparkles } from "lucide-react";
+import { Boxes, Cloud, Cpu, PencilLine, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/error-alert";
@@ -10,10 +11,9 @@ import { LoadingState } from "@/components/ui/loading-state";
 import { Textarea } from "@/components/ui/textarea";
 import { pythonApiFetch } from "@/lib/python-api";
 import type { ModelProfile, ModelProfileCategory, ModelProfilesResponse } from "@/lib/types";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 
 type ImportProvider = "ollama" | "openai" | "huggingface";
-type ImportMode = "ollama" | "hosted";
 
 type ImportDraft = {
   name: string;
@@ -25,17 +25,9 @@ type ImportDraft = {
 
 const importableProviders = new Set<ImportProvider>(["ollama", "openai", "huggingface"]);
 
-const emptyOllamaDraft: ImportDraft = {
+const emptyDraft: ImportDraft = {
   name: "",
   provider: "ollama",
-  model: "",
-  category: "custom",
-  description: "",
-};
-
-const emptyHostedDraft: ImportDraft = {
-  name: "",
-  provider: "openai",
   model: "",
   category: "custom",
   description: "",
@@ -47,6 +39,36 @@ const categoryOptions: Array<{ value: ModelProfileCategory; label: string }> = [
   { value: "medium", label: "Medium" },
   { value: "large", label: "Large" },
   { value: "thinking", label: "Thinking" },
+];
+
+const providerOptions: Array<{
+  value: ImportProvider;
+  label: string;
+  hint: string;
+  example: string;
+  icon: typeof Cpu;
+}> = [
+  {
+    value: "ollama",
+    label: "Ollama",
+    hint: "Use this for a local model that already works with `ollama run`.",
+    example: "my-finetuned-model:latest",
+    icon: Cpu,
+  },
+  {
+    value: "openai",
+    label: "OpenAI",
+    hint: "Use this for an existing OpenAI fine-tuned model id.",
+    example: "ft:gpt-4.1-mini:your-org:model-id",
+    icon: Sparkles,
+  },
+  {
+    value: "huggingface",
+    label: "Hugging Face",
+    hint: "Use this for a hosted Hugging Face model repo id.",
+    example: "your-org/your-finetuned-model",
+    icon: Cloud,
+  },
 ];
 
 function isImportProvider(value: string): value is ImportProvider {
@@ -67,133 +89,33 @@ function toDraft(profile: ModelProfile): ImportDraft {
   };
 }
 
-function ImportForm({
-  title,
-  description,
-  draft,
-  submitLabel,
-  submitting,
-  onSubmit,
-  onChange,
-  mode,
-}: {
-  title: string;
-  description: string;
-  draft: ImportDraft;
-  submitLabel: string;
-  submitting: boolean;
-  onSubmit: () => void;
-  onChange: (updates: Partial<ImportDraft>) => void;
-  mode: ImportMode;
-}) {
-  return (
-    <Card className="space-y-5 bg-white/92">
-      <div>
-        <p className="font-display text-2xl">{title}</p>
-        <p className="mt-2 text-sm leading-7 text-black/60">{description}</p>
-      </div>
+function providerLabel(provider: ImportProvider) {
+  return providerOptions.find((option) => option.value === provider)?.label ?? provider;
+}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-2 text-sm">
-          <span className="font-medium text-black/70">Display name</span>
-          <Input
-            value={draft.name}
-            onChange={(event) => onChange({ name: event.target.value })}
-            placeholder={mode === "ollama" ? "My tuned Ollama model" : "My hosted tuned model"}
-          />
-        </label>
+function providerHint(provider: ImportProvider) {
+  return providerOptions.find((option) => option.value === provider)?.hint ?? "";
+}
 
-        {mode === "hosted" ? (
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-black/70">Hosted provider</span>
-            <select
-              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-              value={draft.provider}
-              onChange={(event) => onChange({ provider: event.target.value as ImportProvider })}
-            >
-              <option value="openai">OpenAI fine-tuned model id</option>
-              <option value="huggingface">Hugging Face model repo id</option>
-            </select>
-          </label>
-        ) : (
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-black/70">Category</span>
-            <select
-              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-              value={draft.category}
-              onChange={(event) => onChange({ category: event.target.value as ModelProfileCategory })}
-            >
-              {categoryOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </div>
+function providerExample(provider: ImportProvider) {
+  return providerOptions.find((option) => option.value === provider)?.example ?? "";
+}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-2 text-sm md:col-span-1">
-          <span className="font-medium text-black/70">{mode === "ollama" ? "Ollama model tag" : "Hosted model id"}</span>
-          <Input
-            value={draft.model}
-            onChange={(event) => onChange({ model: event.target.value })}
-            placeholder={
-              mode === "ollama"
-                ? "for example my-finetuned-model:latest"
-                : draft.provider === "openai"
-                  ? "for example ft:gpt-4.1-mini:your-org:model-id"
-                  : "for example your-org/your-finetuned-model"
-            }
-          />
-        </label>
-
-        {mode === "hosted" ? (
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-black/70">Category</span>
-            <select
-              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-              value={draft.category}
-              onChange={(event) => onChange({ category: event.target.value as ModelProfileCategory })}
-            >
-              {categoryOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-      </div>
-
-      <label className="space-y-2 text-sm">
-        <span className="font-medium text-black/70">Description</span>
-        <Textarea
-          value={draft.description}
-          onChange={(event) => onChange({ description: event.target.value })}
-          placeholder="What this tuned model is best at."
-        />
-      </label>
-
-      <Button disabled={submitting || !draft.name.trim() || !draft.model.trim()} onClick={onSubmit}>
-        {submitting ? "Saving..." : submitLabel}
-      </Button>
-    </Card>
-  );
+function summaryText(profile: ModelProfile) {
+  return `${profile.providerLabel} • ${profile.model}`;
 }
 
 export function ImportModelsPageClient() {
   const [data, setData] = useState<ModelProfilesResponse | null>(null);
   const [drafts, setDrafts] = useState<Record<string, ImportDraft>>({});
-  const [ollamaDraft, setOllamaDraft] = useState<ImportDraft>(emptyOllamaDraft);
-  const [hostedDraft, setHostedDraft] = useState<ImportDraft>(emptyHostedDraft);
+  const [createDraft, setCreateDraft] = useState<ImportDraft>(emptyDraft);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [creatingMode, setCreatingMode] = useState<ImportMode | null>(null);
+  const [creating, setCreating] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -204,7 +126,7 @@ export function ImportModelsPageClient() {
           Object.fromEntries(payload.profiles.filter(isImportedProfile).map((profile) => [profile.id, toDraft(profile)]))
         );
       } catch (requestError) {
-        setError(requestError instanceof Error ? requestError.message : "Could not load imported models.");
+        setError(requestError instanceof Error ? requestError.message : "Could not load saved models.");
       } finally {
         setLoading(false);
       }
@@ -213,45 +135,42 @@ export function ImportModelsPageClient() {
     void load();
   }, []);
 
-  const importedProfiles = useMemo(
-    () => (data?.profiles ?? []).filter(isImportedProfile),
-    [data?.profiles]
-  );
+  const importedProfiles = useMemo(() => (data?.profiles ?? []).filter(isImportedProfile), [data?.profiles]);
+  const createProviderMeta = providerOptions.find((option) => option.value === createDraft.provider) ?? providerOptions[0];
 
   function updateDraft(profileId: string, updates: Partial<ImportDraft>) {
     setDrafts((current) => ({
       ...current,
       [profileId]: {
-        ...(current[profileId] ?? emptyOllamaDraft),
+        ...(current[profileId] ?? emptyDraft),
         ...updates,
       },
     }));
   }
 
-  async function handleCreate(mode: ImportMode) {
-    const draft = mode === "ollama" ? ollamaDraft : hostedDraft;
-    setCreatingMode(mode);
+  function resetMessages() {
     setMessage(null);
     setError(null);
+  }
+
+  async function handleCreate() {
+    setCreating(true);
+    resetMessages();
 
     try {
       const created = await pythonApiFetch<ModelProfile>("/settings/model-profiles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(draft),
+        body: JSON.stringify(createDraft),
       });
       setData((current) => (current ? { ...current, profiles: [created, ...current.profiles] } : current));
       setDrafts((current) => ({ ...current, [created.id]: toDraft(created) }));
-      if (mode === "ollama") {
-        setOllamaDraft(emptyOllamaDraft);
-      } else {
-        setHostedDraft(emptyHostedDraft);
-      }
-      setMessage(`${created.name} is ready to use in Playground and profile selectors.`);
+      setCreateDraft((current) => ({ ...emptyDraft, provider: current.provider }));
+      setMessage(`${created.name} is now ready in Playground and other profile pickers.`);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not import the model.");
+      setError(requestError instanceof Error ? requestError.message : "Could not save the model.");
     } finally {
-      setCreatingMode(null);
+      setCreating(false);
     }
   }
 
@@ -260,8 +179,7 @@ export function ImportModelsPageClient() {
     if (!draft) return;
 
     setSavingId(profileId);
-    setMessage(null);
-    setError(null);
+    resetMessages();
 
     try {
       const updated = await pythonApiFetch<ModelProfile>(`/settings/model-profiles/${profileId}`, {
@@ -273,9 +191,10 @@ export function ImportModelsPageClient() {
         current ? { ...current, profiles: current.profiles.map((profile) => (profile.id === profileId ? updated : profile)) } : current
       );
       setDrafts((current) => ({ ...current, [profileId]: toDraft(updated) }));
+      setEditingId(null);
       setMessage(`Updated ${updated.name}.`);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not save the imported model.");
+      setError(requestError instanceof Error ? requestError.message : "Could not update the model.");
     } finally {
       setSavingId(null);
     }
@@ -283,8 +202,7 @@ export function ImportModelsPageClient() {
 
   async function handleDelete(profileId: string) {
     setDeletingId(profileId);
-    setMessage(null);
-    setError(null);
+    resetMessages();
 
     try {
       const updated = await pythonApiFetch<ModelProfilesResponse>(`/settings/model-profiles/${profileId}`, {
@@ -292,172 +210,174 @@ export function ImportModelsPageClient() {
       });
       setData(updated);
       setDrafts(Object.fromEntries(updated.profiles.filter(isImportedProfile).map((profile) => [profile.id, toDraft(profile)])));
-      setMessage("Imported model removed.");
+      setEditingId((current) => (current === profileId ? null : current));
+      setMessage("Model removed.");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not delete the imported model.");
+      setError(requestError instanceof Error ? requestError.message : "Could not delete the model.");
     } finally {
       setDeletingId(null);
     }
   }
 
   if (loading) {
-    return <LoadingState message="Loading imported models..." />;
+    return <LoadingState message="Loading saved models..." />;
   }
 
   return (
     <div className="space-y-6">
-      <Card className="overflow-hidden p-0">
-        <div className="grid gap-0 lg:grid-cols-[1.05fr_0.95fr]">
-          <div className="bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(238,247,255,0.9))] p-7 sm:p-8">
-            <div className="inline-flex items-center gap-2 rounded-full border border-brand/15 bg-brand/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-brand">
-              <Boxes className="h-3.5 w-3.5" />
-              Import Existing Models
-            </div>
-
-            <h1 className="mt-5 max-w-3xl font-display text-4xl leading-tight sm:text-5xl">
-              Bring already fine-tuned models into one place.
-            </h1>
-            <p className="mt-4 max-w-2xl text-sm leading-7 text-black/62 sm:text-base">
-              Save local Ollama models or hosted fine-tuned model ids as reusable profiles, then use them in Playground and anywhere else the app reads saved profiles.
+      <Card className="space-y-6 bg-white/95">
+        <div className="space-y-3">
+          <div className="inline-flex items-center gap-2 rounded-full border border-brand/15 bg-brand/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-brand">
+            <Boxes className="h-3.5 w-3.5" />
+            My models
+          </div>
+          <div>
+            <h1 className="font-display text-4xl leading-tight sm:text-5xl">Add a fine-tuned model in one step.</h1>
+            <p className="mt-3 max-w-3xl text-sm leading-7 text-black/62 sm:text-base">
+              Name it, paste the model tag or model id, and save it. The model becomes available in Playground and anywhere else
+              the app uses saved profiles.
             </p>
           </div>
+        </div>
 
-          <div className="bg-[linear-gradient(180deg,rgba(12,29,28,0.98),rgba(25,64,57,0.94))] p-7 text-white sm:p-8">
-            <p className="text-xs uppercase tracking-[0.22em] text-white/55">How to use a fine-tuned model here</p>
-            <div className="mt-4 space-y-3">
-              {[
-                "1. Import your Ollama tag or hosted model id",
-                "2. Open Playground to compare it against another saved profile",
-                "3. Set it as a workspace default if you use it often",
-                "4. Keep editing or deleting it from this page",
-              ].map((step) => (
-                <div key={step} className="rounded-[1.3rem] border border-white/10 bg-white/6 px-4 py-3 text-sm text-white/78">
-                  {step}
-                </div>
-              ))}
-            </div>
-            <p className="mt-5 text-sm leading-7 text-white/68">This page stores reusable model identifiers, not adapter file paths.</p>
+        <div className="flex flex-wrap gap-2">
+          {providerOptions.map((option) => {
+            const Icon = option.icon;
+            const selected = createDraft.provider === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setCreateDraft((current) => ({ ...current, provider: option.value }))}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition",
+                  selected ? "border-brand bg-brand text-brand-foreground" : "border-black/10 bg-white text-black/70 hover:bg-black/5"
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="rounded-[1.5rem] border border-black/8 bg-muted/20 p-4 text-sm text-black/65">
+          <p>{createProviderMeta.hint}</p>
+          <p className="mt-2 text-black/50">Example: `{createProviderMeta.example}`</p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-2 text-sm">
+            <span className="font-medium text-black/70">Display name</span>
+            <Input
+              value={createDraft.name}
+              onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))}
+              placeholder="My fine-tuned model"
+            />
+          </label>
+
+          <label className="space-y-2 text-sm">
+            <span className="font-medium text-black/70">
+              {createDraft.provider === "ollama" ? "Model tag" : "Model id"}
+            </span>
+            <Input
+              value={createDraft.model}
+              onChange={(event) => setCreateDraft((current) => ({ ...current, model: event.target.value }))}
+              placeholder={providerExample(createDraft.provider)}
+            />
+          </label>
+        </div>
+
+        <details className="rounded-[1.5rem] border border-black/8 bg-white px-5 py-4">
+          <summary className="cursor-pointer list-none text-sm font-medium text-black/70">Advanced options</summary>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <label className="space-y-2 text-sm">
+              <span className="font-medium text-black/70">Category</span>
+              <select
+                className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                value={createDraft.category}
+                onChange={(event) => setCreateDraft((current) => ({ ...current, category: event.target.value as ModelProfileCategory }))}
+              >
+                {categoryOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm md:col-span-2">
+              <span className="font-medium text-black/70">Description</span>
+              <Textarea
+                value={createDraft.description}
+                onChange={(event) => setCreateDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="Optional note about what this model is best at."
+              />
+            </label>
           </div>
+        </details>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button disabled={creating || !createDraft.name.trim() || !createDraft.model.trim()} onClick={() => void handleCreate()}>
+            {creating ? "Saving..." : "Save model"}
+          </Button>
+          <Link href="/playground" className="text-sm font-medium text-brand hover:opacity-80">
+            Open Playground
+          </Link>
         </div>
       </Card>
 
-      {error ? <ErrorAlert title="Could not manage imported models" description={error} /> : null}
+      {error ? <ErrorAlert title="Could not manage models" description={error} /> : null}
       {message ? <Card className="border-brand/20 bg-brand/5 py-4 text-sm text-black/70">{message}</Card> : null}
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ImportForm
-          title="Import local Ollama model"
-          description="Register an Ollama tag that already exists on your machine, such as an exported fine-tuned model you can already run with `ollama run`."
-          draft={ollamaDraft}
-          submitLabel="Save Ollama model"
-          submitting={creatingMode === "ollama"}
-          onSubmit={() => void handleCreate("ollama")}
-          onChange={(updates) => setOllamaDraft((current) => ({ ...current, ...updates, provider: "ollama" }))}
-          mode="ollama"
-        />
-
-        <ImportForm
-          title="Import hosted fine-tuned model"
-          description="Register an existing OpenAI fine-tuned model id or Hugging Face model repo id so it becomes reusable inside the app."
-          draft={hostedDraft}
-          submitLabel="Save hosted model"
-          submitting={creatingMode === "hosted"}
-          onSubmit={() => void handleCreate("hosted")}
-          onChange={(updates) => setHostedDraft((current) => ({ ...current, ...updates }))}
-          mode="hosted"
-        />
-      </div>
 
       <Card className="space-y-5 bg-white/92">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="font-display text-3xl">Imported model profiles</p>
+            <p className="font-display text-3xl">Saved models</p>
             <p className="mt-2 text-sm text-black/60">
-              These imported entries are saved like normal model profiles, so they are available immediately in Playground and compatible default selectors.
+              These entries are reusable profile shortcuts. Save once, then pick them anywhere the app asks for a saved model.
             </p>
           </div>
-          <div className="flex gap-2 text-xs text-black/45">
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-3 py-1">
-              <Cpu className="h-3.5 w-3.5" />
-              Local Ollama
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-3 py-1">
-              <Cloud className="h-3.5 w-3.5" />
-              Hosted ids
-            </span>
-          </div>
+          <div className="text-sm text-black/45">{importedProfiles.length} saved</div>
         </div>
 
         {importedProfiles.length === 0 ? (
           <div className="rounded-[1.5rem] border border-dashed border-black/10 bg-muted/30 px-5 py-8 text-sm text-black/55">
-            No imported models yet. Add your first Ollama tag or hosted fine-tuned model id above.
+            No saved models yet. Add your first model above, then use it in Playground.
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {importedProfiles.map((profile) => {
               const draft = drafts[profile.id] ?? toDraft(profile);
+              const isEditing = editingId === profile.id;
               return (
                 <div key={profile.id} className="rounded-[1.5rem] border border-black/8 bg-white px-5 py-5 shadow-sm">
-                  <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-                    <label className="space-y-2 text-sm">
-                      <span className="font-medium text-black/70">Display name</span>
-                      <Input value={draft.name} onChange={(event) => updateDraft(profile.id, { name: event.target.value })} />
-                    </label>
-
-                    <label className="space-y-2 text-sm">
-                      <span className="font-medium text-black/70">Provider</span>
-                      <select
-                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-                        value={draft.provider}
-                        onChange={(event) => updateDraft(profile.id, { provider: event.target.value as ImportProvider })}
-                      >
-                        <option value="ollama">Ollama</option>
-                        <option value="openai">OpenAI</option>
-                        <option value="huggingface">Hugging Face</option>
-                      </select>
-                    </label>
-
-                    <label className="space-y-2 text-sm">
-                      <span className="font-medium text-black/70">Model identifier</span>
-                      <Input value={draft.model} onChange={(event) => updateDraft(profile.id, { model: event.target.value })} />
-                    </label>
-
-                    <label className="space-y-2 text-sm">
-                      <span className="font-medium text-black/70">Category</span>
-                      <select
-                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-                        value={draft.category}
-                        onChange={(event) => updateDraft(profile.id, { category: event.target.value as ModelProfileCategory })}
-                      >
-                        {categoryOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-
-                  <label className="mt-4 block space-y-2 text-sm">
-                    <span className="font-medium text-black/70">Description</span>
-                    <Textarea value={draft.description} onChange={(event) => updateDraft(profile.id, { description: event.target.value })} />
-                  </label>
-
-                  <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div className="text-xs text-black/45">
-                      Saved {formatDate(profile.updatedAt || profile.createdAt)} • {profile.providerLabel}
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-display text-2xl">{profile.name}</p>
+                        <span className="rounded-full bg-muted px-3 py-1 text-xs text-black/55">{profile.providerLabel}</span>
+                      </div>
+                      <p className="text-sm text-black/62">{summaryText(profile)}</p>
+                      <p className="text-xs text-black/45">Saved {formatDate(profile.updatedAt || profile.createdAt)}</p>
                     </div>
 
                     <div className="flex flex-wrap gap-2">
                       <Button
                         variant="secondary"
-                        disabled={savingId === profile.id || deletingId === profile.id || !draft.name.trim() || !draft.model.trim()}
-                        onClick={() => void handleSave(profile.id)}
+                        size="sm"
+                        disabled={savingId === profile.id || deletingId === profile.id}
+                        onClick={() => {
+                          setEditingId((current) => (current === profile.id ? null : profile.id));
+                          setDrafts((current) => ({ ...current, [profile.id]: toDraft(profile) }));
+                        }}
                       >
-                        {savingId === profile.id ? "Saving..." : "Save changes"}
+                        <PencilLine className="mr-1 h-3.5 w-3.5" />
+                        {isEditing ? "Close" : "Edit"}
                       </Button>
                       <Button
                         variant="ghost"
+                        size="sm"
                         disabled={deletingId === profile.id || savingId === profile.id}
                         onClick={() => void handleDelete(profile.id)}
                       >
@@ -465,45 +385,91 @@ export function ImportModelsPageClient() {
                       </Button>
                     </div>
                   </div>
+
+                  {isEditing ? (
+                    <div className="mt-5 space-y-4 border-t border-black/8 pt-5">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="space-y-2 text-sm">
+                          <span className="font-medium text-black/70">Display name</span>
+                          <Input value={draft.name} onChange={(event) => updateDraft(profile.id, { name: event.target.value })} />
+                        </label>
+
+                        <label className="space-y-2 text-sm">
+                          <span className="font-medium text-black/70">Provider</span>
+                          <select
+                            className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                            value={draft.provider}
+                            onChange={(event) => updateDraft(profile.id, { provider: event.target.value as ImportProvider })}
+                          >
+                            {providerOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="space-y-2 text-sm md:col-span-2">
+                          <span className="font-medium text-black/70">Model identifier</span>
+                          <Input value={draft.model} onChange={(event) => updateDraft(profile.id, { model: event.target.value })} />
+                        </label>
+                      </div>
+
+                      <details className="rounded-[1.25rem] border border-black/8 bg-muted/15 px-4 py-3">
+                        <summary className="cursor-pointer list-none text-sm font-medium text-black/70">Advanced options</summary>
+                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                          <label className="space-y-2 text-sm">
+                            <span className="font-medium text-black/70">Category</span>
+                            <select
+                              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                              value={draft.category}
+                              onChange={(event) => updateDraft(profile.id, { category: event.target.value as ModelProfileCategory })}
+                            >
+                              {categoryOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="space-y-2 text-sm md:col-span-2">
+                            <span className="font-medium text-black/70">Description</span>
+                            <Textarea
+                              value={draft.description}
+                              onChange={(event) => updateDraft(profile.id, { description: event.target.value })}
+                            />
+                          </label>
+                        </div>
+                      </details>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="secondary"
+                          disabled={savingId === profile.id || deletingId === profile.id || !draft.name.trim() || !draft.model.trim()}
+                          onClick={() => void handleSave(profile.id)}
+                        >
+                          {savingId === profile.id ? "Saving..." : "Save changes"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          disabled={savingId === profile.id || deletingId === profile.id}
+                          onClick={() => {
+                            setDrafts((current) => ({ ...current, [profile.id]: toDraft(profile) }));
+                            setEditingId(null);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
           </div>
         )}
       </Card>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        {[
-          {
-            icon: Sparkles,
-            title: "Use in Playground",
-            copy: "Every imported model becomes selectable in Playground after it is saved.",
-          },
-          {
-            icon: Cpu,
-            title: "Keep local models simple",
-            copy: "Use Ollama imports for models that already work with `ollama run your-model`.",
-          },
-          {
-            icon: Cloud,
-            title: "Hosted ids stay lightweight",
-            copy: "OpenAI and Hugging Face imports only store the reusable model id, not training artifacts.",
-          },
-        ].map((item) => {
-          const Icon = item.icon;
-          return (
-            <Card key={item.title} className="space-y-4 bg-white/88">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand/10 text-brand">
-                <Icon className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="font-display text-2xl">{item.title}</p>
-                <p className="mt-2 text-sm leading-7 text-black/58">{item.copy}</p>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
     </div>
   );
 }
