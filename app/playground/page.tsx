@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { OllamaGpuPill } from "@/components/playground/ollama-gpu-pill";
 import { PlaygroundComparison } from "@/components/playground/playground-comparison";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -13,11 +14,15 @@ import type { ModelProfilesResponse } from "@/lib/types";
 
 const selectClassName = "rounded-2xl border border-black/10 bg-white px-4 py-3";
 
-export default function PlaygroundPage() {
+function PlaygroundPageContent() {
+  const searchParams = useSearchParams();
+  const requestedBaseProfileId = searchParams?.get("baseProfileId") ?? "";
+  const requestedCompareProfileId = searchParams?.get("compareProfileId") ?? "";
+
   const [prompt, setPrompt] = useState("");
   const [profilesData, setProfilesData] = useState<ModelProfilesResponse | null>(null);
-  const [baseProfileId, setBaseProfileId] = useState("");
-  const [compareProfileId, setCompareProfileId] = useState("");
+  const [baseProfileId, setBaseProfileId] = useState(requestedBaseProfileId);
+  const [compareProfileId, setCompareProfileId] = useState(requestedCompareProfileId);
   const [baseOutput, setBaseOutput] = useState<string | null>(null);
   const [tunedOutput, setTunedOutput] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -27,14 +32,25 @@ export default function PlaygroundPage() {
     pythonApiFetch<ModelProfilesResponse>("/settings/model-profiles")
       .then((payload) => {
         const runnableProfiles = payload.profiles.filter(isRunnableProfile);
+        const requestedBase = findModelProfile(payload.profiles, requestedBaseProfileId);
+        const requestedCompare = findModelProfile(payload.profiles, requestedCompareProfileId);
         const preferredBaseProfile = findModelProfile(runnableProfiles, payload.defaults.playgroundBaseProfileId);
         const preferredCompareProfile = findModelProfile(payload.profiles, payload.defaults.playgroundCompareProfileId);
         setProfilesData(payload);
-        setBaseProfileId((current) => current || preferredBaseProfile?.id || runnableProfiles[0]?.id || payload.profiles[0]?.id || "");
-        setCompareProfileId((current) => current || preferredCompareProfile?.id || "");
+        setBaseProfileId((current) =>
+          current ||
+          requestedBase?.id ||
+          preferredBaseProfile?.id ||
+          runnableProfiles[0]?.id ||
+          payload.profiles[0]?.id ||
+          ""
+        );
+        setCompareProfileId((current) =>
+          current || requestedCompare?.id || preferredCompareProfile?.id || ""
+        );
       })
       .catch((requestError: Error) => setError(requestError.message));
-  }, []);
+  }, [requestedBaseProfileId, requestedCompareProfileId]);
 
   const baseProfile = useMemo(
     () => findModelProfile(profilesData?.profiles ?? [], baseProfileId),
@@ -84,17 +100,9 @@ export default function PlaygroundPage() {
           <p className="text-xs uppercase tracking-[0.2em] text-black/45">Profile-driven playground</p>
           <p className="font-display text-3xl">Playground</p>
           <p className="mt-2 text-sm text-black/60">
-            Compare two saved model profiles side by side using the same prompt. Need a tuned model here? Add it from
-            My models, then come back and select it here.
+            Compare two saved model profiles side by side using the same prompt. Open any completed run from
+            Tuned models to launch it here pre-selected as the comparison profile.
           </p>
-        </div>
-
-        <div className="rounded-2xl border border-brand/15 bg-brand/5 p-4 text-sm text-black/70">
-          Need to use a fine-tuned model that already exists?{" "}
-          <Link href="/models" className="font-semibold text-brand hover:opacity-80">
-            Open My models
-          </Link>{" "}
-          to save the model tag or hosted model id first.
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
@@ -149,5 +157,13 @@ export default function PlaygroundPage() {
 
       <PlaygroundComparison baseOutput={baseOutput} tunedOutput={tunedOutput} />
     </div>
+  );
+}
+
+export default function PlaygroundPage() {
+  return (
+    <Suspense fallback={null}>
+      <PlaygroundPageContent />
+    </Suspense>
   );
 }

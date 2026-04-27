@@ -4,10 +4,11 @@
   "private": true,
   "description": "Fine-tuning dashboard MVP built with Next.js, Prisma, and OpenAI.",
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1 --port 12401",
-    "build": "next build",
+    "dev": "next dev --port 12401",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
+    "postinstall": "prisma generate",
     "test": "vitest run",
     "test:watch": "vitest"
   },

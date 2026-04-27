@@ -248,6 +248,67 @@ When `Unsloth` is installed in `LOCAL_TRAINING_PYTHON`, the local training path 
 
 If `Unsloth` is not installed, the app falls back to the standard `Transformers + PEFT` path.
 
+## Adaptive Ollama GPU
+
+Ollama runs as a single daemon and picks GPU 0 by default. On shared multi-GPU
+boxes that GPU is often saturated by another process, which surfaces as a
+`CUDA error: out of memory` 500 the moment you run a prompt.
+
+When `OLLAMA_AUTO_MANAGE="1"` the backend:
+
+1. Queries `nvidia-smi` before every Ollama-backed inference call.
+2. If the GPU Ollama is currently pinned to has less than
+   `OLLAMA_MIN_FREE_GPU_MB` free, rewrites `OLLAMA_DROPIN_PATH` with
+   `CUDA_VISIBLE_DEVICES=<freest GPU>` and restarts the service.
+3. Waits for `OLLAMA_HEALTH_URL` to come back before forwarding the prompt.
+4. Retries exactly once if a request still returns a CUDA OOM.
+
+The Playground shows a small pill with the current pinned GPU and a
+`Move to freest GPU` button that forces a rebalance on demand.
+
+### One-time admin setup
+
+Create a writable drop-in file and allow the app user to `daemon-reload` and
+`restart` the service without a password. Replace `vs95259v` with the user the
+backend runs as.
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo touch    /etc/systemd/system/ollama.service.d/cuda.conf
+sudo chgrp    vs95259v /etc/systemd/system/ollama.service.d/cuda.conf
+sudo chmod 664 /etc/systemd/system/ollama.service.d/cuda.conf
+
+sudo tee /etc/sudoers.d/agentic-ollama <<'EOF'
+vs95259v ALL=(root) NOPASSWD: /bin/systemctl daemon-reload, /bin/systemctl restart ollama.service
+EOF
+sudo chmod 440 /etc/sudoers.d/agentic-ollama
+```
+
+If the drop-in is not writable or sudo is not configured, the backend logs a
+one-line warning and falls back to plain Ollama behaviour - no crash, no retry.
+
+## Training job folder layout
+
+Every local fine-tuning run writes to `uploads_python/jobs/<jobId>/`. The
+layout is intentionally flat so the useful artefacts are one click away:
+
+```text
+uploads_python/jobs/<jobId>/
+├── README.md                    auto-generated index of this folder
+├── local_train_config.json      frozen job configuration
+├── local_train_status.json      live status (what the UI polls)
+├── local_train_events.jsonl     append-only event log
+├── local_train_metrics.json     final train + eval metrics
+├── local_train.log              stdout / stderr of the training subprocess
+├── adapter/                     LoRA adapter + tokenizer (the fine-tuned model)
+└── gguf/                        optional GGUF export + Modelfile
+```
+
+Intermediate HuggingFace Trainer checkpoints (`checkpoint-N/` with
+`optimizer.pt`, `scheduler.pt`, `rng_state.pth`) are deleted automatically
+once the final adapter is saved. Download zip bundles are built on demand
+and streamed; they are not persisted inside the job folder.
+
 ## Downloads
 
 ### Dataset downloads
@@ -289,6 +350,12 @@ The adapter bundle contains:
 | `NEXT_PUBLIC_PYTHON_API_URL` | Browser-visible FastAPI URL |
 | `DATABASE_URL` | Postgres storage, optional |
 | `DATABASE_SCHEMA` | Postgres schema name |
+| `DATABASE_MIN_POOL_SIZE` | minimum pooled Postgres connections (default 1) |
+| `DATABASE_MAX_POOL_SIZE` | maximum pooled Postgres connections (default 5) |
+| `DATABASE_STATE_CACHE_TTL_MS` | in-process state snapshot TTL in ms (default 1000, 0 disables). Set to 0 when running multiple uvicorn workers. |
+| `AGENTIC_DATA_DIR` | override the Python API data dir (default `python_api/data`). Point at `/data/python_api` in Docker/Fly. |
+| `AGENTIC_UPLOADS_DIR` | override the uploads dir (default `uploads_python`). Point at `/data/uploads_python` in Docker/Fly. |
+| `ALLOWED_ORIGINS` | comma-separated CORS allow-list for the FastAPI service. Defaults to `*` for dev; set to your Vercel domain in production. |
 
 ### Ollama
 
@@ -300,6 +367,12 @@ The adapter bundle contains:
 | `OLLAMA_LARGE_MODEL` | large Ollama profile |
 | `OLLAMA_THINKING_MODEL` | reasoning Ollama profile |
 | `OLLAMA_AGENT_MODEL` | default Ollama agent model |
+| `OLLAMA_AUTO_MANAGE` | enable the adaptive GPU feature (see below) |
+| `OLLAMA_DROPIN_PATH` | systemd drop-in file the backend rewrites |
+| `OLLAMA_SERVICE_NAME` | service name passed to `systemctl` |
+| `OLLAMA_MIN_FREE_GPU_MB` | free-VRAM threshold that triggers a GPU switch |
+| `OLLAMA_HEALTH_URL` | endpoint polled after a restart |
+| `OLLAMA_RESTART_TIMEOUT_S` | how long to wait for Ollama to come back |
 
 ### Local GPU QLoRA
 
@@ -362,6 +435,8 @@ The adapter bundle contains:
 - `PATCH /settings/model-profiles/defaults`
 - `PATCH /settings/model-profiles/{profile_id}`
 - `DELETE /settings/model-profiles/{profile_id}`
+- `GET /settings/gpu/inventory`
+- `POST /settings/gpu/rebalance-ollama`
 
 ### Datasets
 
@@ -445,6 +520,35 @@ Make sure:
 - confirm `ollama` CLI is installed
 - confirm `ollama serve` is running
 - keep `exportGguf` enabled when `pushToOllama` is enabled
+
+### Postgres returns `FATAL: sorry, too many clients already`
+
+The backend pools Postgres connections (default min 1 / max 5). If the
+database is shared with other tenants and is still saturated, lower
+`DATABASE_MAX_POOL_SIZE` in `.env` and restart the Python API. Restart also
+drains any leaked connections that were opened before the pool was
+introduced.
+
+### Stale reads or multi-worker deployments
+
+The backend caches the full state snapshot in-process for
+`DATABASE_STATE_CACHE_TTL_MS` milliseconds (default 1000) to reduce
+Postgres round-trips on polling GET endpoints. Writers invalidate the
+cache immediately, so the TTL only affects readers that are in-flight
+during the window. If you run uvicorn with `--workers N > 1`, set
+`DATABASE_STATE_CACHE_TTL_MS=0` so one worker's write isn't hidden by
+another worker's stale cache. Live hit/miss counters are exposed at
+`GET /health` under `stateCache`.
+
+### Playground returns `CUDA error: out of memory`
+
+Ollama picked a GPU that is saturated by another process. Either:
+
+- enable adaptive GPU selection (`OLLAMA_AUTO_MANAGE="1"` plus the one-time
+  admin setup in [Adaptive Ollama GPU](#adaptive-ollama-gpu)), then click
+  `Move to freest GPU` on the Playground, or
+- set `CUDA_VISIBLE_DEVICES` manually in the systemd unit for
+  `ollama.service` and run `sudo systemctl restart ollama.service`.
 
 ### OpenAI or Hugging Face actions are unavailable
 

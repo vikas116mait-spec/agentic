@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from copy import deepcopy
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from python_api import ollama_manager
 from python_api.env import ensure_env_loaded
 from python_api.errors import ApiError
 from python_api.huggingface_jobs import (
@@ -32,6 +34,8 @@ from python_api.local_qlora import (
 )
 from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.store import (
+    DATASETS_DIR,
+    JOBS_DIR,
     ROOT,
     UPLOADS_DIR,
     get_agent_run,
@@ -50,6 +54,9 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 ensure_env_loaded()
+
+
+logger = logging.getLogger(__name__)
 
 
 SUPPORTED_MODEL_PROVIDERS = {"ollama", "openai", "huggingface", "local", "groq", "gemini", "cerebras", "together"}
@@ -147,7 +154,7 @@ def _resolve_local_job_path(raw_path: str | None) -> Path:
         raise ApiError("NOT_FOUND", "Local training artifact path is missing.", 404)
 
     resolved = Path(raw_path).resolve()
-    jobs_root = (ROOT / "uploads_python" / "jobs").resolve()
+    jobs_root = JOBS_DIR.resolve()
     try:
         resolved.relative_to(jobs_root)
     except ValueError as error:
@@ -164,7 +171,7 @@ def _resolve_dataset_path(raw_path: str | None) -> Path:
         raise ApiError("NOT_FOUND", "Dataset file path is missing.", 404)
 
     resolved = Path(raw_path).resolve()
-    datasets_root = (ROOT / "uploads_python" / "datasets").resolve()
+    datasets_root = DATASETS_DIR.resolve()
     try:
         resolved.relative_to(datasets_root)
     except ValueError as error:
@@ -1178,12 +1185,46 @@ def cancel_fine_tuning_job(openai_job_id: str) -> Any:
     return get_model_client("openai").fine_tuning.jobs.cancel(openai_job_id)
 
 
+def _preflight_ollama_gpu() -> None:
+    """Best-effort Ollama GPU preflight. Never raises to the caller."""
+    if not ollama_manager.auto_manage_enabled():
+        return
+    try:
+        ollama_manager.ensure_ollama_on_free_gpu()
+    except ollama_manager.OllamaManageUnavailable as exc:
+        logger.info("Skipping Ollama auto-manage: %s", exc)
+    except Exception:  # pragma: no cover - defensive, never break the prompt
+        logger.exception("Unexpected Ollama auto-manage failure")
+
+
 def run_model(prompt: str, model: str, provider: str | None = None) -> str:
-    response = get_model_client(provider, model=model).chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.choices[0].message.content or ""
+    resolved_provider = get_model_provider(provider)
+    is_ollama = resolved_provider == "ollama"
+
+    if is_ollama:
+        _preflight_ollama_gpu()
+
+    def _invoke() -> str:
+        response = get_model_client(provider, model=model).chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content or ""
+
+    try:
+        return _invoke()
+    except Exception as exc:
+        if not is_ollama or not ollama_manager.is_cuda_oom_error(exc):
+            raise
+        if not ollama_manager.auto_manage_enabled():
+            raise
+        logger.warning("Ollama returned CUDA OOM; forcing a GPU rebalance and retrying once.")
+        try:
+            ollama_manager.ensure_ollama_on_free_gpu(force=True)
+        except ollama_manager.OllamaManageUnavailable as manage_exc:
+            logger.info("Ollama auto-manage retry unavailable: %s", manage_exc)
+            raise exc from manage_exc
+        return _invoke()
 
 
 def normalize_job_status(status: str | None) -> str:
@@ -1319,6 +1360,45 @@ def upload_dataset_record_to_huggingface(dataset_id: str) -> dict[str, Any]:
     return update_state(mutator)
 
 
+_JOB_README_TEMPLATE = """# Training job `{job_id}`
+
+This folder is auto-created by the local QLoRA trainer. Everything you need
+to re-use the fine-tuned model lives right here; you do not need to dig
+into any subfolder unless you want training internals.
+
+## Layout
+
+- `adapter/` - the LoRA adapter + tokenizer. Load this on top of the base
+  model to use the fine-tuned weights.
+- `gguf/` - GGUF export + `Modelfile` (only present when GGUF export was
+  enabled at job creation).
+- `local_train_config.json` - the frozen job configuration.
+- `local_train_status.json` - the most recent run status shown in the UI.
+- `local_train_events.jsonl` - append-only event log.
+- `local_train_metrics.json` - final train + eval metrics.
+- `local_train.log` - stdout / stderr of the training subprocess.
+
+## What is **not** kept
+
+- Intermediate HuggingFace Trainer checkpoints (`checkpoint-N/` with
+  optimizer/scheduler/rng state) are deleted once the final adapter is
+  saved. They are not needed for inference.
+- Download zip bundles are built on demand and never persisted here.
+"""
+
+
+def _write_job_readme(working_dir: Path) -> None:
+    try:
+        working_dir.mkdir(parents=True, exist_ok=True)
+        readme_path = working_dir / "README.md"
+        readme_path.write_text(
+            _JOB_README_TEMPLATE.format(job_id=working_dir.name),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def _build_local_training_job_config(
     *,
     job_id: str,
@@ -1334,7 +1414,10 @@ def _build_local_training_job_config(
     learning_rate: float | None = None,
     per_device_batch_size: int | None = None,
 ) -> LocalQLoraJobConfig:
-    working_dir = ROOT / "uploads_python" / "jobs" / job_id
+    working_dir = JOBS_DIR / job_id
+    # output_dir holds the HuggingFace Trainer scratch (intermediate checkpoints,
+    # auto README, etc). It is deleted after training succeeds so the final job
+    # folder only contains the adapter + logs.
     output_dir = working_dir / "artifacts"
     merged_hyperparameters: dict[str, Any] = dict(hyperparameters or {})
     if num_epochs is not None:
@@ -1343,6 +1426,7 @@ def _build_local_training_job_config(
         merged_hyperparameters.setdefault("learning_rate", learning_rate)
     if per_device_batch_size is not None:
         merged_hyperparameters.setdefault("per_device_train_batch_size", per_device_batch_size)
+    _write_job_readme(working_dir)
     return LocalQLoraJobConfig(
         job_id=job_id,
         dataset_id=dataset["id"],
@@ -1351,7 +1435,7 @@ def _build_local_training_job_config(
         base_model=base_model,
         working_dir=str(working_dir),
         output_dir=str(output_dir),
-        model_output_path=str(output_dir / "adapter"),
+        model_output_path=str(working_dir / "adapter"),
         config_path=str(working_dir / "local_train_config.json"),
         status_path=str(working_dir / "local_train_status.json"),
         events_path=str(working_dir / "local_train_events.jsonl"),
