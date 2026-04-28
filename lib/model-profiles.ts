@@ -3,7 +3,8 @@ import type { ModelProfile } from "@/lib/types";
 const LOCAL_FINE_TUNING_MODEL_ORDER = new Map([
   ["Qwen/Qwen2.5-3B-Instruct", 0],
   ["Qwen/Qwen2.5-1.5B-Instruct", 1],
-  ["Qwen/Qwen2.5-0.5B-Instruct", 2]
+  ["unsloth/Llama-3.2-1B-Instruct", 2],
+  ["Qwen/Qwen2.5-0.5B-Instruct", 3]
 ]);
 
 export function findModelProfile(profiles: ModelProfile[], profileId: string | null | undefined) {

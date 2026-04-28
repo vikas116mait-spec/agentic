@@ -270,7 +270,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
                   <p className="text-sm font-semibold text-black/80">{preset.label}</p>
                   <p className="mt-2 text-xs text-black/55">{preset.description}</p>
                   <div className="mt-3 space-y-1 text-xs text-black/50">
-                    <p>{preset.numEpochs} epochs</p>
+                    <p>{preset.maxSteps ? `${preset.maxSteps} step cap` : `${preset.numEpochs} epochs`}</p>
                     <p>Batch {preset.perDeviceBatchSize} x Acc {preset.gradientAccumulationSteps}</p>
                     <p>Context {preset.maxSeqLength} tokens</p>
                   </div>

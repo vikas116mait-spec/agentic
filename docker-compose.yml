@@ -10,10 +10,11 @@ services:
     environment:
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: "1"
-      PYTHON_API_URL: http://python-api:8001
+      AUTH_TRUST_HOST: "true"
+      PYTHON_API_URL: http://python-api:12400
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
     ports:
-      - "3000:3000"
+      - "12401:12401"
     depends_on:
       python-api:
         condition: service_healthy
@@ -23,7 +24,7 @@ services:
         - CMD
         - node
         - -e
-        - fetch('http://127.0.0.1:3000/agent').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))
+        - fetch('http://127.0.0.1:12401/agent').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))
       interval: 20s
       timeout: 10s
       retries: 5
@@ -42,7 +43,7 @@ services:
       TEMPORAL_ADDRESS: "temporal:7233"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
     ports:
-      - "8001:8001"
+      - "12400:12400"
     depends_on:
       temporal:
         condition: service_healthy
@@ -57,7 +58,7 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health').read()
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:12400/health').read()
       interval: 20s
       timeout: 10s
       retries: 5
@@ -95,7 +96,7 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CLI_ADDRESS: temporal:7233
     ports:
-      - "7233:7233"
+      - "12404:7233"
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,9 +116,9 @@ services:
     image: temporalio/ui:${TEMPORAL_UI_VERSION:-2.43.3}
     environment:
       TEMPORAL_ADDRESS: temporal:7233
-      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+      TEMPORAL_CORS_ORIGINS: http://localhost:12401
     ports:
-      - "8080:8080"
+      - "12405:8080"
     depends_on:
       temporal:
         condition: service_healthy
@@ -127,3 +128,10 @@ volumes:
   postgres_data:
   python_api_data:
   python_uploads:
+
+networks:
+  default:
+    name: agentic-net
+    ipam:
+      config:
+        - subnet: 10.253.0.0/24

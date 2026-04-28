@@ -775,6 +775,16 @@ def _default_model_profiles() -> list[dict[str, Any]]:
             "updatedAt": now,
         },
         {
+            "id": "profile-local-llama-32-1b",
+            "name": "Llama 3.2 1B Local",
+            "provider": "local",
+            "model": "unsloth/Llama-3.2-1B-Instruct",
+            "category": "small",
+            "description": "Tiny Llama-based local QLoRA profile for lighter GPUs and quick instruction-tuning smoke tests.",
+            "createdAt": now,
+            "updatedAt": now,
+        },
+        {
             "id": "profile-local-qwen-15b",
             "name": "Qwen 1.5B Local",
             "provider": "local",

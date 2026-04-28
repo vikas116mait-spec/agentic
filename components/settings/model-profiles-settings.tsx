@@ -56,6 +56,7 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
   local: [
     { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended free local fine-tune" },
     { value: "Qwen/Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B Instruct", hint: "Lower-VRAM fallback for local training" },
+    { value: "unsloth/Llama-3.2-1B-Instruct", label: "Llama 3.2 1B Instruct (Unsloth)", hint: "Tiny Llama-based local QLoRA option for lighter GPUs and quick smoke tests" },
     { value: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B Instruct", hint: "Fastest smoke-test fallback" },
     { value: "HuggingFaceTB/SmolLM2-1.7B-Instruct", label: "SmolLM2 1.7B Instruct", hint: "Very small free instruct model for light GPUs" },
     { value: "ibm-granite/granite-3.1-2b-instruct", label: "Granite 3.1 2B Instruct", hint: "Compact IBM model with good quality for its size" },

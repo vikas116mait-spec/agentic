@@ -5,6 +5,7 @@ export type LocalTrainingPreset = {
   label: string;
   shortLabel: string;
   description: string;
+  maxSteps?: number;
   numEpochs: number;
   learningRate: number;
   perDeviceBatchSize: number;
@@ -18,11 +19,12 @@ export const LOCAL_TRAINING_PRESETS: Record<LocalTrainingPresetId, LocalTraining
     label: "Fast smoke test",
     shortLabel: "Fastest",
     description: "Shortest run for pipeline validation and quick iteration on smaller datasets.",
+    maxSteps: 60,
     numEpochs: 1,
     learningRate: 2e-4,
     perDeviceBatchSize: 2,
-    gradientAccumulationSteps: 2,
-    maxSeqLength: 768,
+    gradientAccumulationSteps: 4,
+    maxSeqLength: 1024,
   },
   balanced: {
     id: "balanced",

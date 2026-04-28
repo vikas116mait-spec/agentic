@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 from python_api.local_qlora import ensure_local_training_ready, spawn_local_training_job
 from python_api.local_qlora.config import LocalQLoraJobConfig
+from python_api.local_qlora.data import format_training_record
+from python_api.local_qlora.model import _resolve_target_modules
 from python_api.local_qlora.train import LocalProgressCallback, _recommended_dataset_num_proc, run_local_qlora_training
 from python_api.services import _default_local_ollama_model_name, _default_model_profiles, _ensure_model_profiles_initialized
 
@@ -52,6 +54,18 @@ class FakeTokenizer:
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+
+class FakeChatTemplateTokenizer:
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool = False,
+        add_generation_prompt: bool = False,
+    ) -> str:
+        rendered = " || ".join(f"{message['role']}={message['content']}" for message in messages)
+        return f"TEMPLATE::{rendered}::tokenize={tokenize}::gen={add_generation_prompt}"
 
 
 class FakeTrainer:
@@ -181,8 +195,11 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
         resolved = config.resolved_hyperparameters()
 
         self.assertEqual(resolved["num_train_epochs"], 1)
-        self.assertEqual(resolved["gradient_accumulation_steps"], 2)
-        self.assertEqual(resolved["max_seq_length"], 768)
+        self.assertEqual(resolved["max_steps"], 60)
+        self.assertEqual(resolved["gradient_accumulation_steps"], 4)
+        self.assertEqual(resolved["max_seq_length"], 1024)
+        self.assertEqual(resolved["lora_alpha"], 16)
+        self.assertEqual(resolved["lora_dropout"], 0.0)
 
     def test_quality_preset_still_allows_manual_override(self) -> None:
         config = LocalQLoraJobConfig(
@@ -208,6 +225,47 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
         self.assertEqual(resolved["per_device_train_batch_size"], 1)
         self.assertEqual(resolved["gradient_accumulation_steps"], 8)
         self.assertEqual(resolved["learning_rate"], 5e-5)
+
+    def test_llama32_instruction_records_use_chat_headers(self) -> None:
+        formatted = format_training_record(
+            {
+                "instruction": "Summarize this case",
+                "input": "A short contract dispute.",
+                "output": "It is a contract dispute summary.",
+            },
+            "unsloth/Llama-3.2-1B-Instruct",
+        )
+
+        self.assertEqual(
+            formatted["text"],
+            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+            "Summarize this case\n\nA short contract dispute.<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            "It is a contract dispute summary.<|eot_id|>",
+        )
+
+    def test_tokenizer_chat_template_is_preferred_when_available(self) -> None:
+        formatted = format_training_record(
+            {
+                "instruction": "Summarize this case",
+                "input": "A short contract dispute.",
+                "output": "It is a contract dispute summary.",
+            },
+            "Qwen/Qwen2.5-3B-Instruct",
+            tokenizer=FakeChatTemplateTokenizer(),
+        )
+
+        self.assertEqual(
+            formatted["text"],
+            "TEMPLATE::user=Summarize this case\n\nA short contract dispute. || "
+            "assistant=It is a contract dispute summary.::tokenize=False::gen=False",
+        )
+
+    def test_falcon_models_use_falcon_target_modules(self) -> None:
+        self.assertEqual(
+            _resolve_target_modules("tiiuae/Falcon3-3B-Instruct"),
+            ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"],
+        )
 
 
 class LocalTrainingWarningsTests(unittest.TestCase):

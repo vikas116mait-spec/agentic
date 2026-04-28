@@ -171,8 +171,8 @@ def _build_sft_config_kwargs(
         "per_device_train_batch_size": int(hyperparameters["per_device_train_batch_size"]),
         "gradient_accumulation_steps": int(hyperparameters["gradient_accumulation_steps"]),
         "learning_rate": float(hyperparameters["learning_rate"]),
+        "optim": "adamw_8bit",
         "logging_steps": int(hyperparameters["logging_steps"]),
-        "save_steps": int(hyperparameters["save_steps"]),
         "save_strategy": "steps",
         "save_total_limit": 2,
         "warmup_ratio": float(hyperparameters["warmup_ratio"]),
@@ -186,6 +186,14 @@ def _build_sft_config_kwargs(
         "dataloader_num_workers": dataloader_workers,
     }
 
+    max_steps = int(hyperparameters.get("max_steps") or 0)
+    save_steps = int(hyperparameters["save_steps"])
+    if max_steps > 0:
+        kwargs["max_steps"] = max_steps
+        save_steps = max(1, min(save_steps, max_steps))
+
+    kwargs["save_steps"] = save_steps
+
     if bf16_enabled:
         kwargs["bf16"] = True
     elif gpu_available:
@@ -193,7 +201,7 @@ def _build_sft_config_kwargs(
 
     kwargs["eval_strategy"] = "steps" if has_eval else "no"
     if has_eval:
-        kwargs["eval_steps"] = max(10, int(hyperparameters["save_steps"]))
+        kwargs["eval_steps"] = max(1, min(save_steps, max_steps)) if max_steps > 0 else max(10, save_steps)
 
     return kwargs
 
@@ -282,7 +290,32 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
     )
 
     try:
-        train_dataset, eval_dataset, dataset_stats = build_sft_datasets(config)
+        write_status_file(
+            status_path,
+            {
+                "stage": "loading_model",
+                "statusMessage": "Loading quantized base model and tokenizer.",
+            },
+        )
+
+        model, tokenizer, peft_config, torch_module = load_quantized_model(config)
+        unsloth_active = peft_config is None
+        append_event(
+            events_path,
+            "info",
+            f"Loaded model via {'Unsloth (2x faster, ~70% less VRAM)' if unsloth_active else 'HuggingFace + PEFT (standard mode)'}.",
+            event_type="model_ready",
+        )
+        write_status_file(status_path, {"unslothActive": unsloth_active})
+
+        write_status_file(
+            status_path,
+            {
+                "stage": "loading_model",
+                "statusMessage": "Formatting the dataset with the selected model template.",
+            },
+        )
+        train_dataset, eval_dataset, dataset_stats = build_sft_datasets(config, tokenizer=tokenizer)
         append_event(
             events_path,
             "info",
@@ -296,7 +329,7 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
             status_path,
             {
                 "stage": "loading_model",
-                "statusMessage": "Loading quantized base model and tokenizer.",
+                "statusMessage": "Model and dataset are ready. Preparing the trainer.",
                 "datasetStats": dataset_stats,
                 "runtimeSummary": {
                     "gpuCount": local_gpu_count(),
@@ -315,16 +348,6 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                 },
             },
         )
-
-        model, tokenizer, peft_config, torch_module = load_quantized_model(config)
-        unsloth_active = peft_config is None
-        append_event(
-            events_path,
-            "info",
-            f"Loaded model via {'Unsloth (2x faster, ~70% less VRAM)' if unsloth_active else 'HuggingFace + PEFT (standard mode)'}.",
-            event_type="model_ready",
-        )
-        write_status_file(status_path, {"unslothActive": unsloth_active})
 
         training_args = _instantiate_sft_config(
             _build_sft_config_kwargs(

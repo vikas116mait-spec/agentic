@@ -10,7 +10,9 @@ describe("getLocalTrainingPreset", () => {
     const preset = getLocalTrainingPreset("fast");
 
     expect(preset.numEpochs).toBe(1);
-    expect(preset.gradientAccumulationSteps).toBe(2);
+    expect(preset.gradientAccumulationSteps).toBe(4);
+    expect(preset.maxSeqLength).toBe(1024);
+    expect(preset.maxSteps).toBe(60);
   });
 });
 

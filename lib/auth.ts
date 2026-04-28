@@ -13,6 +13,7 @@ const LOCAL_MODE_USER = {
 };
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
+  trustHost: process.env.AUTH_TRUST_HOST === "true",
   pages: {
     signIn: "/login"
   },
