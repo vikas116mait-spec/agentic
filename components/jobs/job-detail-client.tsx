@@ -633,15 +633,30 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
               Download dataset
             </Button>
           ) : null}
+          {datasetDownloadUrl ? (
+            <Link href="/guides/downloads#dataset-file">
+              <Button variant="ghost">How to use dataset</Button>
+            </Link>
+          ) : null}
           {canDownloadLocalModel ? (
             <Button variant="secondary" onClick={() => window.location.assign(downloadUrl)}>
               Download adapter
             </Button>
           ) : null}
+          {canDownloadLocalModel ? (
+            <Link href="/guides/downloads#adapter-bundle">
+              <Button variant="ghost">How to use adapter</Button>
+            </Link>
+          ) : null}
           {ggufFile ? (
             <Button variant="secondary" onClick={() => window.location.assign(`${getPythonApiBaseUrl()}/jobs/${job.id}/download?type=gguf`)}>
               Download GGUF
             </Button>
+          ) : null}
+          {ggufFile ? (
+            <Link href="/guides/downloads#gguf-file">
+              <Button variant="ghost">How to use GGUF</Button>
+            </Link>
           ) : null}
           <Button onClick={handleSync} disabled={syncing}>
             {syncing ? "Syncing..." : "Sync status"}
@@ -709,13 +724,17 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
                 Download training dataset
               </Button>
             ) : null}
+            <Link href="/guides/downloads">
+              <Button variant="ghost">Open usage guide</Button>
+            </Link>
           </div>
 
           <div className="rounded-2xl bg-white/90 p-4 text-sm text-black/70">
             <p className="font-medium text-black/85">Next steps</p>
             <p className="mt-2">1. Download the adapter bundle if you want to keep the trained files outside this workspace.</p>
             <p className="mt-1">2. Download the GGUF if you want the easiest local model file for Ollama or `llama.cpp`.</p>
-            <p className="mt-1">3. Use the chat panel below to test the model before sharing or exporting it.</p>
+            <p className="mt-1">3. Open the usage guide if you need exact next steps for dataset, adapter, or GGUF downloads.</p>
+            <p className="mt-1">4. Use the chat panel below to test the model before sharing or exporting it.</p>
           </div>
         </Card>
       ) : null}

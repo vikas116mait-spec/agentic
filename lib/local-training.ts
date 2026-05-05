@@ -137,38 +137,63 @@ export function getLocalTrainingPreset(presetId: string | null | undefined): Loc
   return LOCAL_TRAINING_PRESETS.balanced;
 }
 
-export function describeModelTier(modelId: string) {
-  const normalized = modelId.toLowerCase();
+function extractParameterBillions(modelId: string): number | null {
+  // Match "0.5b", "1.5b", "8b", "14b", "70b", "72b", etc. -- but not partial token like "1b" inside "14b".
+  const match = modelId.toLowerCase().match(/(?<![\d.])(\d+(?:\.\d+)?)\s*b\b/);
+  if (!match) {
+    return null;
+  }
+  const value = Number.parseFloat(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
 
-  if (normalized.includes("0.5b") || normalized.includes("1b")) {
+export function describeModelTier(modelId: string) {
+  const billions = extractParameterBillions(modelId);
+
+  if (billions === null) {
+    return {
+      tier: "Custom",
+      useCase: "Review VRAM and runtime needs before using this model heavily.",
+    };
+  }
+
+  if (billions <= 1) {
     return {
       tier: "Low VRAM",
       useCase: "Best for smoke tests and the smallest local GPUs.",
     };
   }
 
-  if (
-    normalized.includes("1.5b") ||
-    normalized.includes("1.7b") ||
-    normalized.includes("2b") ||
-    normalized.includes("3b") ||
-    normalized.includes("4b")
-  ) {
+  if (billions <= 4) {
     return {
       tier: "Balanced",
       useCase: "Good default for fast local iteration with usable quality.",
     };
   }
 
-  if (normalized.includes("7b") || normalized.includes("8b") || normalized.includes("9b")) {
+  if (billions <= 9) {
     return {
       tier: "Stronger quality",
       useCase: "Better outputs, but slower training or inference and more VRAM use.",
     };
   }
 
+  if (billions <= 16) {
+    return {
+      tier: "High VRAM",
+      useCase: "Higher accuracy 13-16B class. Recommended ~16 GB+ VRAM with QLoRA.",
+    };
+  }
+
+  if (billions <= 40) {
+    return {
+      tier: "Heavy GPU",
+      useCase: "Strong 30B-class models. Plan for ~24 GB+ VRAM, possibly with CPU offload.",
+    };
+  }
+
   return {
-    tier: "Custom",
-    useCase: "Review VRAM and runtime needs before using this model heavily.",
+    tier: "Multi-GPU / cloud",
+    useCase: "70B+ models usually need multiple GPUs or paid cloud fine-tuning.",
   };
 }

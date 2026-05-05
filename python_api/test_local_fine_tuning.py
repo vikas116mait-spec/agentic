@@ -74,6 +74,24 @@ class FakeChatTemplateTokenizer:
         return f"TEMPLATE::{rendered}::tokenize={tokenize}::gen={add_generation_prompt}"
 
 
+class FakeLeafModule:
+    def children(self):
+        return ()
+
+
+class FakeDiscoveredTargetModuleModel:
+    def __init__(self, leaf_names: list[str]) -> None:
+        self.leaf_names = leaf_names
+
+    def named_modules(self):
+        yield ("", self)
+        for index, leaf_name in enumerate(self.leaf_names):
+            yield (f"model.layers.{index}.{leaf_name}", FakeLeafModule())
+
+    def children(self):
+        return ()
+
+
 class FakeTrainer:
     def __init__(self, model: FakeModel) -> None:
         self.model = model
@@ -362,10 +380,20 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
         self.assertEqual(example["target"], "It is a contract dispute summary.")
         self.assertIn("gen=True", example["prompt"])
 
-    def test_falcon_models_use_falcon_target_modules(self) -> None:
+    def test_classic_falcon_models_use_falcon_target_modules_without_model_discovery(self) -> None:
         self.assertEqual(
-            _resolve_target_modules("tiiuae/Falcon3-3B-Instruct"),
+            _resolve_target_modules("tiiuae/falcon-7b"),
             ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"],
+        )
+
+    def test_falcon3_models_prefer_loaded_model_leaf_names_over_repo_name(self) -> None:
+        model = FakeDiscoveredTargetModuleModel(
+            ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        )
+
+        self.assertEqual(
+            _resolve_target_modules("tiiuae/Falcon3-3B-Instruct", model=model),
+            ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         )
 
     def test_target_module_strategy_can_limit_to_attention_layers(self) -> None:

@@ -93,6 +93,9 @@ export function DatasetDetailClient({ datasetId }: { datasetId: string }) {
           <Button variant="secondary" onClick={() => window.location.assign(datasetDownloadUrl)}>
             Download dataset
           </Button>
+          <Link href="/guides/downloads#dataset-file">
+            <Button variant="ghost">How to use this file</Button>
+          </Link>
           {canUploadToOpenAI && (
             <Button variant="ghost" onClick={handleUploadToOpenAI} disabled={uploading}>
               {uploading ? "Uploading..." : "Pre-upload to OpenAI"}

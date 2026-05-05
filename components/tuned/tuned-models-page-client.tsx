@@ -412,6 +412,13 @@ export function TunedModelsPageClient() {
                     Adapter
                   </Button>
                 ) : null}
+                {canDownloadLocal ? (
+                  <Link href="/guides/downloads#adapter-bundle">
+                    <Button size="sm" variant="ghost">
+                      How to use adapter
+                    </Button>
+                  </Link>
+                ) : null}
                 {ggufFile ? (
                   <Button
                     size="sm"
@@ -421,6 +428,13 @@ export function TunedModelsPageClient() {
                     <Download className="mr-1.5 h-4 w-4" />
                     GGUF
                   </Button>
+                ) : null}
+                {ggufFile ? (
+                  <Link href="/guides/downloads#gguf-file">
+                    <Button size="sm" variant="ghost">
+                      How to use GGUF
+                    </Button>
+                  </Link>
                 ) : null}
                 <Link href={`/jobs/${job.id}`}>
                   <Button size="sm" variant="ghost">

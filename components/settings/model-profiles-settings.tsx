@@ -51,7 +51,9 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
     { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended paid cloud Qwen fine-tune" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact Microsoft instruct model" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Popular open instruct model" },
-    { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Stronger paid cloud fine-tune" }
+    { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Stronger paid cloud fine-tune" },
+    { value: "Qwen/Qwen2.5-14B-Instruct", label: "Qwen 2.5 14B Instruct", hint: "Higher quality cloud fine-tune (~16 GB VRAM in 4-bit locally)" },
+    { value: "Qwen/Qwen2.5-32B-Instruct", label: "Qwen 2.5 32B Instruct", hint: "Top open-weights accuracy via paid cloud (32B parameters)" }
   ],
   local: [
     { value: "Qwen/Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B Instruct", hint: "Recommended free local fine-tune" },
@@ -63,7 +65,10 @@ const MODEL_OPTIONS: Record<ProviderKey, ModelOption[]> = {
     { value: "tiiuae/Falcon3-3B-Instruct", label: "Falcon 3 3B Instruct", hint: "Another free 3B family for local QLoRA runs" },
     { value: "microsoft/Phi-3.5-mini-instruct", label: "Phi 3.5 Mini Instruct", hint: "Compact model with good quality per GPU" },
     { value: "mistralai/Mistral-7B-Instruct-v0.3", label: "Mistral 7B Instruct v0.3", hint: "Strong open instruct model if you want another family" },
-    { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Larger free model if you want stronger quality" }
+    { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen 2.5 7B Instruct", hint: "Larger free model if you want stronger quality" },
+    { value: "unsloth/Meta-Llama-3.1-8B-Instruct", label: "Llama 3.1 8B Instruct (Unsloth)", hint: "Stronger 8B Llama for higher accuracy (~12 GB+ VRAM with QLoRA)" },
+    { value: "Qwen/Qwen2.5-14B-Instruct", label: "Qwen 2.5 14B Instruct", hint: "High-accuracy 14B Qwen for serious local QLoRA (~16 GB+ VRAM)" },
+    { value: "Qwen/Qwen2.5-32B-Instruct", label: "Qwen 2.5 32B Instruct", hint: "Heavy 32B Qwen for max local accuracy (~24 GB+ VRAM with offload)" }
   ],
   groq: [
     { value: "llama-3.3-70b-versatile", label: "Llama 3.3 70B Versatile", hint: "Best quality free Groq model" },

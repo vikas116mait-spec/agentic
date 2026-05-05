@@ -126,6 +126,12 @@ def _supported_target_modules_for_strategy(model_id: str, strategy: str) -> list
     return family_defaults
 
 
+def _generic_target_modules_for_strategy(strategy: str) -> list[str]:
+    if strategy == "attention_only":
+        return list(_ATTENTION_TARGET_MODULES)
+    return list(dict.fromkeys(_ATTENTION_TARGET_MODULES + _MLP_TARGET_MODULES))
+
+
 def _discover_model_leaf_names(model: Any) -> set[str]:
     discovered: set[str] = set()
     for module_name, module in getattr(model, "named_modules", lambda: [])():
@@ -139,6 +145,10 @@ def _discover_model_leaf_names(model: Any) -> set[str]:
         leaf_name = module_name.rsplit(".", 1)[-1]
         discovered.add(leaf_name)
     return discovered
+
+
+def _match_available_target_modules(candidates: list[str], available_leaf_names: set[str]) -> list[str]:
+    return [name for name in candidates if name in available_leaf_names]
 
 
 def _resolve_target_modules(
@@ -157,9 +167,15 @@ def _resolve_target_modules(
         return candidates
 
     available_leaf_names = _discover_model_leaf_names(model)
-    matched = [name for name in candidates if name in available_leaf_names]
+    matched = _match_available_target_modules(candidates, available_leaf_names)
     if matched:
         return matched
+    discovered_candidates = _match_available_target_modules(
+        _generic_target_modules_for_strategy(normalized_strategy),
+        available_leaf_names,
+    )
+    if discovered_candidates:
+        return discovered_candidates
     return candidates
 
 
