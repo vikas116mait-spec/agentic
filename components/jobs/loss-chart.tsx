@@ -9,13 +9,27 @@ type LossChartProps = {
 };
 
 export function LossChart({ data, height = 80, className = "" }: LossChartProps) {
-  if (!data || data.length < 2) {
+  if (!data || data.length === 0) {
     return (
       <div
         className={`flex items-center justify-center text-xs text-black/35 ${className}`}
         style={{ height }}
       >
         Waiting for training data...
+      </div>
+    );
+  }
+
+  if (data.length === 1) {
+    const onlyPoint = data[0];
+    return (
+      <div
+        className={`flex items-center justify-between px-2 text-xs text-black/45 ${className}`}
+        style={{ height }}
+      >
+        <span>First training update captured</span>
+        <span>step {onlyPoint.step}</span>
+        <span>loss {onlyPoint.loss.toFixed(4)}</span>
       </div>
     );
   }

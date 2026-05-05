@@ -1909,10 +1909,32 @@ def list_jobs() -> list[dict[str, Any]]:
     state = load_state()
     jobs = []
     for job in sort_desc(state["jobs"]):
+        live_job = deepcopy(job)
+        if job.get("modelProvider") == "local":
+            _refresh_local_job_ollama_registration(job)
+            inspection = inspect_local_training_job(job)
+            live_job["status"] = inspection["status"]
+            live_job["statusMessage"] = inspection["statusMessage"]
+            live_job["providerJobId"] = inspection["providerJobId"]
+            live_job["providerJobUrl"] = inspection["providerJobUrl"]
+            live_job["providerNamespace"] = inspection["providerNamespace"]
+            live_job["fineTunedModel"] = inspection["fineTunedModel"]
+            live_job["trainedTokens"] = inspection["trainedTokens"]
+            live_job["resultFilesJson"] = inspection["resultFilesJson"]
+            live_job["modelRepoId"] = inspection["modelRepoId"]
+            live_job["modelRepoUrl"] = inspection["modelRepoUrl"]
+            live_job["datasetRepoId"] = inspection["datasetRepoId"]
+            live_job["datasetRepoPath"] = inspection["datasetRepoPath"]
+            live_job["datasetRepoUrl"] = inspection["datasetRepoUrl"]
+            live_job["trackioUrl"] = inspection["trackioUrl"]
+            live_job["progressJson"] = inspection["progressJson"]
+            live_job["updatedAt"] = inspection["updatedAt"]
+            if inspection["status"] in {"succeeded", "failed", "cancelled"}:
+                live_job["finishedAt"] = inspection["finishedAt"] or live_job.get("finishedAt")
         dataset = get_dataset(state, job["datasetId"])
         jobs.append(
             {
-                **deepcopy(job),
+                **live_job,
                 "datasetName": dataset["name"] if dataset else "Unknown dataset",
                 "modelProviderLabel": get_provider_display_name(job.get("modelProvider")),
             }
