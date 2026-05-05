@@ -295,6 +295,7 @@ def _runtime_summary_payload(
     config: LocalQLoraJobConfig,
 ) -> dict[str, Any]:
     ollama_summary = runtime.get("ollama") or {}
+    hyperparameters = config.resolved_hyperparameters()
     return {
         "gpuCount": gpu_count,
         "runtimePython": runtime.get("python"),
@@ -303,8 +304,19 @@ def _runtime_summary_payload(
         "selectedGpuFreeMb": selected_gpu["memoryFreeMb"] if selected_gpu else None,
         "unslothAvailable": runtime.get("unslothAvailable"),
         "speedPreset": config.training_preset,
-        "maxSeqLength": int(config.resolved_hyperparameters()["max_seq_length"]),
-        "gradientAccumulationSteps": int(config.resolved_hyperparameters()["gradient_accumulation_steps"]),
+        "maxSeqLength": int(hyperparameters["max_seq_length"]),
+        "gradientAccumulationSteps": int(hyperparameters["gradient_accumulation_steps"]),
+        "loraRank": int(hyperparameters["lora_r"]),
+        "loraAlpha": int(hyperparameters["lora_alpha"]),
+        "loraDropout": float(hyperparameters["lora_dropout"]),
+        "targetModuleStrategy": str(hyperparameters.get("target_module_strategy", "auto")),
+        "evalRatio": float(config.eval_ratio),
+        "evalMaxSamples": int(hyperparameters.get("eval_max_samples") or 0),
+        "evalMaxNewTokens": int(hyperparameters.get("eval_max_new_tokens") or 0),
+        "inferenceTemperature": float(hyperparameters.get("inference_temperature", 0.2)),
+        "inferenceTopP": float(hyperparameters.get("inference_top_p", 0.9)),
+        "inferenceTopK": int(hyperparameters.get("inference_top_k", 40)),
+        "inferenceRepeatPenalty": float(hyperparameters.get("inference_repeat_penalty", 1.1)),
         "warnings": runtime.get("warnings") or [],
         "ollamaHost": ollama_summary.get("host"),
         "ollamaReachable": ollama_summary.get("reachable"),

@@ -13,7 +13,7 @@ from typing import Any
 
 from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.local_qlora.data import build_sft_datasets
-from python_api.local_qlora.evaluation import summarize_eval_metrics
+from python_api.local_qlora.evaluation import run_holdout_generation_evaluation, summarize_eval_metrics
 from python_api.local_qlora.model import load_quantized_model, local_gpu_count
 from python_api.local_qlora.state import append_event, read_status_file, write_status_file
 from python_api.store import serialize_job_storage_path, utc_now_iso
@@ -185,6 +185,7 @@ def _build_sft_config_kwargs(
         "max_length": int(hyperparameters["max_seq_length"]),
         "dataset_num_proc": dataset_num_proc,
         "dataloader_num_workers": dataloader_workers,
+        "seed": int(config.seed),
     }
 
     max_steps = int(hyperparameters.get("max_steps") or 0)
@@ -203,6 +204,9 @@ def _build_sft_config_kwargs(
     kwargs["eval_strategy"] = "steps" if has_eval else "no"
     if has_eval:
         kwargs["eval_steps"] = max(1, min(save_steps, max_steps)) if max_steps > 0 else max(10, save_steps)
+        kwargs["load_best_model_at_end"] = True
+        kwargs["metric_for_best_model"] = "eval_loss"
+        kwargs["greater_is_better"] = False
 
     return kwargs
 
@@ -263,6 +267,17 @@ def _instantiate_trainer(
         trainer_kwargs["tokenizer"] = tokenizer
 
     return SFTTrainer(**trainer_kwargs)
+
+
+def _ollama_inference_parameters(config: LocalQLoraJobConfig) -> dict[str, Any]:
+    hyperparameters = config.resolved_hyperparameters()
+    return {
+        "temperature": float(hyperparameters.get("inference_temperature", 0.2)),
+        "top_p": float(hyperparameters.get("inference_top_p", 0.9)),
+        "top_k": int(hyperparameters.get("inference_top_k", 40)),
+        "repeat_penalty": float(hyperparameters.get("inference_repeat_penalty", 1.1)),
+        "num_ctx": int(hyperparameters.get("max_seq_length", 1024)),
+    }
 
 
 def _release_training_model_resources(trainer: Any | None, torch_module: Any) -> None:
@@ -334,7 +349,12 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                 "statusMessage": "Formatting the dataset with the selected model template.",
             },
         )
-        train_dataset, eval_dataset, dataset_stats = build_sft_datasets(config, tokenizer=tokenizer)
+        dataset_bundle = build_sft_datasets(config, tokenizer=tokenizer)
+        if len(dataset_bundle) == 4:
+            train_dataset, eval_dataset, dataset_stats, eval_records = dataset_bundle
+        else:  # pragma: no cover - compatibility with older test doubles
+            train_dataset, eval_dataset, dataset_stats = dataset_bundle
+            eval_records = []
         append_event(
             events_path,
             "info",
@@ -364,6 +384,17 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                     ),
                     "maxSeqLength": int(config.resolved_hyperparameters()["max_seq_length"]),
                     "gradientAccumulationSteps": int(config.resolved_hyperparameters()["gradient_accumulation_steps"]),
+                    "loraRank": int(config.resolved_hyperparameters()["lora_r"]),
+                    "loraAlpha": int(config.resolved_hyperparameters()["lora_alpha"]),
+                    "loraDropout": float(config.resolved_hyperparameters()["lora_dropout"]),
+                    "targetModuleStrategy": str(config.resolved_hyperparameters().get("target_module_strategy", "auto")),
+                    "evalRatio": float(config.eval_ratio),
+                    "evalMaxSamples": int(config.resolved_hyperparameters().get("eval_max_samples") or 0),
+                    "evalMaxNewTokens": int(config.resolved_hyperparameters().get("eval_max_new_tokens") or 0),
+                    "inferenceTemperature": float(config.resolved_hyperparameters().get("inference_temperature", 0.2)),
+                    "inferenceTopP": float(config.resolved_hyperparameters().get("inference_top_p", 0.9)),
+                    "inferenceTopK": int(config.resolved_hyperparameters().get("inference_top_k", 40)),
+                    "inferenceRepeatPenalty": float(config.resolved_hyperparameters().get("inference_repeat_penalty", 1.1)),
                 },
             },
         )
@@ -408,7 +439,44 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
             },
         )
         eval_metrics = trainer.evaluate() if eval_dataset is not None else {}
-        evaluation_summary = summarize_eval_metrics(eval_metrics)
+        generation_metrics: dict[str, Any] = {}
+        eval_max_samples = int(config.resolved_hyperparameters().get("eval_max_samples") or 0)
+        eval_max_new_tokens = int(config.resolved_hyperparameters().get("eval_max_new_tokens") or 160)
+        if eval_records and eval_max_samples > 0:
+            append_event(
+                events_path,
+                "info",
+                f"Running held-out generation evaluation on up to {min(len(eval_records), eval_max_samples)} samples.",
+                event_type="generation_eval_started",
+            )
+            try:
+                generation_metrics = run_holdout_generation_evaluation(
+                    model=trainer.model,
+                    tokenizer=tokenizer,
+                    eval_records=eval_records,
+                    model_id=config.base_model,
+                    max_samples=eval_max_samples,
+                    max_new_tokens=eval_max_new_tokens,
+                    torch_module=torch_module,
+                )
+                if generation_metrics:
+                    append_event(
+                        events_path,
+                        "info",
+                        (
+                            "Held-out generation evaluation complete: "
+                            f"EM {generation_metrics.get('exactMatch', 0.0):.2%}, "
+                            f"Token F1 {generation_metrics.get('tokenF1', 0.0):.2%}, "
+                            f"ROUGE-L {generation_metrics.get('rougeL', 0.0):.2%}."
+                        ),
+                        event_type="generation_eval_done",
+                    )
+            except Exception as generation_eval_error:
+                record_warning(
+                    f"Held-out generation evaluation failed: {generation_eval_error}",
+                    event_type="generation_eval_failed",
+                )
+        evaluation_summary = summarize_eval_metrics(eval_metrics, generation_metrics)
 
         write_status_file(
             status_path,
@@ -502,7 +570,10 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                 if fallback_note:
                     append_event(events_path, "info", fallback_note, event_type="gguf_export_fallback_note")
 
-                modelfile_path = write_ollama_modelfile(gguf_path)
+                modelfile_path = write_ollama_modelfile(
+                    gguf_path,
+                    inference_parameters=_ollama_inference_parameters(config),
+                )
                 append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
 
                 if config.push_to_ollama and config.ollama_model_name:
@@ -513,7 +584,11 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                         event_type="ollama_push_started",
                     )
                     try:
-                        push_to_ollama(gguf_path, config.ollama_model_name)
+                        push_to_ollama(
+                            gguf_path,
+                            config.ollama_model_name,
+                            inference_parameters=_ollama_inference_parameters(config),
+                        )
                         ollama_registered = True
                         append_event(
                             events_path,
@@ -539,6 +614,7 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
         metrics_payload = {
             "train": train_metrics,
             "eval": eval_metrics,
+            "generation": generation_metrics,
             "summary": evaluation_summary,
         }
         metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")

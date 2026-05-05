@@ -15,9 +15,11 @@ import {
 } from "@/lib/model-profiles";
 import {
   LOCAL_TRAINING_PRESETS,
+  TARGET_MODULE_STRATEGIES,
   describeModelTier,
   getLocalTrainingPreset,
   type LocalTrainingPresetId,
+  type TargetModuleStrategy,
 } from "@/lib/local-training";
 import { pythonApiFetch } from "@/lib/python-api";
 import type { ModelProfilesResponse } from "@/lib/types";
@@ -66,6 +68,21 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
   const [numEpochs, setNumEpochs] = useState(LOCAL_TRAINING_PRESETS.balanced.numEpochs);
   const [learningRate, setLearningRate] = useState(LOCAL_TRAINING_PRESETS.balanced.learningRate);
   const [perDeviceBatchSize, setPerDeviceBatchSize] = useState(LOCAL_TRAINING_PRESETS.balanced.perDeviceBatchSize);
+  const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState(LOCAL_TRAINING_PRESETS.balanced.gradientAccumulationSteps);
+  const [maxSeqLength, setMaxSeqLength] = useState(LOCAL_TRAINING_PRESETS.balanced.maxSeqLength);
+  const [loraRank, setLoraRank] = useState(LOCAL_TRAINING_PRESETS.balanced.loraRank);
+  const [loraAlpha, setLoraAlpha] = useState(LOCAL_TRAINING_PRESETS.balanced.loraAlpha);
+  const [loraDropout, setLoraDropout] = useState(LOCAL_TRAINING_PRESETS.balanced.loraDropout);
+  const [warmupRatio, setWarmupRatio] = useState(LOCAL_TRAINING_PRESETS.balanced.warmupRatio);
+  const [weightDecay, setWeightDecay] = useState(LOCAL_TRAINING_PRESETS.balanced.weightDecay);
+  const [evalRatio, setEvalRatio] = useState(LOCAL_TRAINING_PRESETS.balanced.evalRatio);
+  const [evalMaxSamples, setEvalMaxSamples] = useState(LOCAL_TRAINING_PRESETS.balanced.evalMaxSamples);
+  const [evalMaxNewTokens, setEvalMaxNewTokens] = useState(LOCAL_TRAINING_PRESETS.balanced.evalMaxNewTokens);
+  const [targetModuleStrategy, setTargetModuleStrategy] = useState<TargetModuleStrategy>(LOCAL_TRAINING_PRESETS.balanced.targetModuleStrategy);
+  const [inferenceTemperature, setInferenceTemperature] = useState(LOCAL_TRAINING_PRESETS.balanced.inferenceTemperature);
+  const [inferenceTopP, setInferenceTopP] = useState(LOCAL_TRAINING_PRESETS.balanced.inferenceTopP);
+  const [inferenceTopK, setInferenceTopK] = useState(LOCAL_TRAINING_PRESETS.balanced.inferenceTopK);
+  const [inferenceRepeatPenalty, setInferenceRepeatPenalty] = useState(LOCAL_TRAINING_PRESETS.balanced.inferenceRepeatPenalty);
 
   function preferredFreeProfile(profiles: ModelProfilesResponse["profiles"]) {
     return (
@@ -126,6 +143,21 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
     setNumEpochs(preset.numEpochs);
     setLearningRate(preset.learningRate);
     setPerDeviceBatchSize(preset.perDeviceBatchSize);
+    setGradientAccumulationSteps(preset.gradientAccumulationSteps);
+    setMaxSeqLength(preset.maxSeqLength);
+    setLoraRank(preset.loraRank);
+    setLoraAlpha(preset.loraAlpha);
+    setLoraDropout(preset.loraDropout);
+    setWarmupRatio(preset.warmupRatio);
+    setWeightDecay(preset.weightDecay);
+    setEvalRatio(preset.evalRatio);
+    setEvalMaxSamples(preset.evalMaxSamples);
+    setEvalMaxNewTokens(preset.evalMaxNewTokens);
+    setTargetModuleStrategy(preset.targetModuleStrategy);
+    setInferenceTemperature(preset.inferenceTemperature);
+    setInferenceTopP(preset.inferenceTopP);
+    setInferenceTopK(preset.inferenceTopK);
+    setInferenceRepeatPenalty(preset.inferenceRepeatPenalty);
   }
 
   async function handleCreate() {
@@ -138,6 +170,28 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
     setError(null);
 
     try {
+      const localHyperparameters = isLocalProvider
+        ? {
+            num_train_epochs: numEpochs,
+            learning_rate: learningRate,
+            per_device_train_batch_size: perDeviceBatchSize,
+            gradient_accumulation_steps: gradientAccumulationSteps,
+            max_seq_length: maxSeqLength,
+            lora_r: loraRank,
+            lora_alpha: loraAlpha,
+            lora_dropout: loraDropout,
+            warmup_ratio: warmupRatio,
+            weight_decay: weightDecay,
+            eval_ratio: evalRatio,
+            eval_max_samples: evalMaxSamples,
+            eval_max_new_tokens: evalMaxNewTokens,
+            target_module_strategy: targetModuleStrategy,
+            inference_temperature: inferenceTemperature,
+            inference_top_p: inferenceTopP,
+            inference_top_k: inferenceTopK,
+            inference_repeat_penalty: inferenceRepeatPenalty,
+          }
+        : undefined;
       const payload = await pythonApiFetch<{ id: string }>("/jobs", {
         method: "POST",
         headers: {
@@ -148,6 +202,7 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
           baseModel: selectedProfile.model,
           modelProvider: selectedProfile.provider,
           ...(isLocalProvider && {
+            hyperparameters: localHyperparameters,
             trainingPreset,
             exportGguf,
             ggufQuantization,
@@ -417,49 +472,268 @@ export function CreateJobForm({ initialDatasetId = "" }: { initialDatasetId?: st
                 <p className="font-medium text-black/80">Preset summary</p>
                 <p className="mt-1">{activePreset.description}</p>
                 <p className="mt-2 text-xs text-black/50">
-                  Current preset uses gradient accumulation {activePreset.gradientAccumulationSteps} and context length {activePreset.maxSeqLength}.
+                  Current preset uses LoRA rank {activePreset.loraRank}, gradient accumulation {activePreset.gradientAccumulationSteps}, and context length {activePreset.maxSeqLength}.
                 </p>
               </div>
-              <div className="grid gap-4 md:grid-cols-3">
-                <label className="space-y-1.5 text-sm">
-                  <span className="font-medium text-black/70">Epochs</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={numEpochs}
-                    onChange={(e) => setNumEpochs(Number(e.target.value))}
-                    className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-                  />
-                  <p className="text-xs text-black/40">Preset default: {activePreset.numEpochs}. More epochs = more overfitting risk.</p>
-                </label>
-                <label className="space-y-1.5 text-sm">
-                  <span className="font-medium text-black/70">Learning rate</span>
-                  <input
-                    type="number"
-                    step={1e-5}
-                    min={1e-6}
-                    max={1e-2}
-                    value={learningRate}
-                    onChange={(e) => setLearningRate(Number(e.target.value))}
-                    className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-                  />
-                  <p className="text-xs text-black/40">Preset default: {activePreset.learningRate}. Lower = slower, more stable.</p>
-                </label>
-                <label className="space-y-1.5 text-sm">
-                  <span className="font-medium text-black/70">Batch size (per device)</span>
-                  <select
-                    value={perDeviceBatchSize}
-                    onChange={(e) => setPerDeviceBatchSize(Number(e.target.value))}
-                    className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
-                  >
-                    <option value={1}>1 — lowest VRAM</option>
-                    <option value={2}>2 — default</option>
-                    <option value={4}>4 — faster, needs more VRAM</option>
-                    <option value={8}>8 — large GPU only</option>
-                  </select>
-                  <p className="text-xs text-black/40">Preset default: {activePreset.perDeviceBatchSize}. Reduce if you get OOM errors.</p>
-                </label>
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-black/45">Schedule</p>
+                  <div className="mt-3 grid gap-4 md:grid-cols-3">
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Epochs</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        value={numEpochs}
+                        onChange={(e) => setNumEpochs(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Preset default: {activePreset.numEpochs}. More epochs increase adaptation and overfitting risk.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Learning rate</span>
+                      <input
+                        type="number"
+                        step={1e-5}
+                        min={1e-6}
+                        max={1e-2}
+                        value={learningRate}
+                        onChange={(e) => setLearningRate(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Preset default: {activePreset.learningRate}. Lower is slower but usually steadier.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Batch size (per device)</span>
+                      <select
+                        value={perDeviceBatchSize}
+                        onChange={(e) => setPerDeviceBatchSize(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      >
+                        <option value={1}>1 — lowest VRAM</option>
+                        <option value={2}>2 — default</option>
+                        <option value={4}>4 — faster, needs more VRAM</option>
+                        <option value={8}>8 — large GPU only</option>
+                      </select>
+                      <p className="text-xs text-black/40">Preset default: {activePreset.perDeviceBatchSize}. Reduce first if you hit OOM.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Gradient accumulation</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={64}
+                        value={gradientAccumulationSteps}
+                        onChange={(e) => setGradientAccumulationSteps(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Higher values simulate a larger batch without increasing immediate VRAM.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Max sequence length</span>
+                      <input
+                        type="number"
+                        min={256}
+                        max={8192}
+                        step={128}
+                        value={maxSeqLength}
+                        onChange={(e) => setMaxSeqLength(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Longer context helps longer examples but raises VRAM and training time.</p>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-black/45">Adapter capacity</p>
+                  <div className="mt-3 grid gap-4 md:grid-cols-3">
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">LoRA rank</span>
+                      <input
+                        type="number"
+                        min={4}
+                        max={256}
+                        step={4}
+                        value={loraRank}
+                        onChange={(e) => setLoraRank(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Higher rank increases adaptation capacity and memory use.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">LoRA alpha</span>
+                      <input
+                        type="number"
+                        min={4}
+                        max={512}
+                        step={4}
+                        value={loraAlpha}
+                        onChange={(e) => setLoraAlpha(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Scaling factor paired with rank. Stronger updates usually use a higher alpha.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">LoRA dropout</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={0.5}
+                        step={0.01}
+                        value={loraDropout}
+                        onChange={(e) => setLoraDropout(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Small dropout can regularize tiny datasets; 0 keeps the strongest fit.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm md:col-span-2">
+                      <span className="font-medium text-black/70">Target layer strategy</span>
+                      <select
+                        value={targetModuleStrategy}
+                        onChange={(e) => setTargetModuleStrategy(e.target.value as TargetModuleStrategy)}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      >
+                        {TARGET_MODULE_STRATEGIES.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-black/40">
+                        {TARGET_MODULE_STRATEGIES.find((option) => option.id === targetModuleStrategy)?.description}
+                      </p>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-black/45">Regularization and evaluation</p>
+                  <div className="mt-3 grid gap-4 md:grid-cols-3">
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Warmup ratio</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={0.5}
+                        step={0.01}
+                        value={warmupRatio}
+                        onChange={(e) => setWarmupRatio(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">A short warmup often helps stability on small, noisy datasets.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Weight decay</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={0.2}
+                        step={0.005}
+                        value={weightDecay}
+                        onChange={(e) => setWeightDecay(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Regularizes updates and can help avoid memorizing tiny datasets.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Eval split ratio</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={0.4}
+                        step={0.01}
+                        value={evalRatio}
+                        onChange={(e) => setEvalRatio(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">How much of the dataset to hold out for quality checks.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Generation eval samples</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={32}
+                        value={evalMaxSamples}
+                        onChange={(e) => setEvalMaxSamples(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Runs a small held-out answer quality check after training.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Generation eval max new tokens</span>
+                      <input
+                        type="number"
+                        min={32}
+                        max={1024}
+                        step={16}
+                        value={evalMaxNewTokens}
+                        onChange={(e) => setEvalMaxNewTokens(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Cap for each held-out generation during evaluation.</p>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-black/45">Inference defaults</p>
+                  <div className="mt-3 grid gap-4 md:grid-cols-3">
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Temperature</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={2}
+                        step={0.01}
+                        value={inferenceTemperature}
+                        onChange={(e) => setInferenceTemperature(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Lower values make responses steadier and more literal.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Top-p</span>
+                      <input
+                        type="number"
+                        min={0.1}
+                        max={1}
+                        step={0.01}
+                        value={inferenceTopP}
+                        onChange={(e) => setInferenceTopP(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Nucleus sampling cap for the registered Ollama model.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Top-k</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={200}
+                        value={inferenceTopK}
+                        onChange={(e) => setInferenceTopK(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Token shortlist size used during Ollama inference.</p>
+                    </label>
+                    <label className="space-y-1.5 text-sm">
+                      <span className="font-medium text-black/70">Repeat penalty</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={2}
+                        step={0.01}
+                        value={inferenceRepeatPenalty}
+                        onChange={(e) => setInferenceRepeatPenalty(Number(e.target.value))}
+                        className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm"
+                      />
+                      <p className="text-xs text-black/40">Helps reduce looping and repeated phrases in the exported Ollama model.</p>
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
           )}

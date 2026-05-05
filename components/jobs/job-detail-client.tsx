@@ -36,6 +36,17 @@ type JobProgressSnapshot = {
     dataloaderWorkers?: number | null;
     maxSeqLength?: number | null;
     gradientAccumulationSteps?: number | null;
+    loraRank?: number | null;
+    loraAlpha?: number | null;
+    loraDropout?: number | null;
+    targetModuleStrategy?: string | null;
+    evalRatio?: number | null;
+    evalMaxSamples?: number | null;
+    evalMaxNewTokens?: number | null;
+    inferenceTemperature?: number | null;
+    inferenceTopP?: number | null;
+    inferenceTopK?: number | null;
+    inferenceRepeatPenalty?: number | null;
     ollamaHost?: string | null;
     ollamaReachable?: boolean | null;
     ollamaCliAvailable?: boolean | null;
@@ -69,6 +80,10 @@ type JobProgressSnapshot = {
       eval_runtime?: number | null;
       eval_samples_per_second?: number | null;
       eval_steps_per_second?: number | null;
+      generationSampleCount?: number | null;
+      generationExactMatch?: number | null;
+      generationTokenF1?: number | null;
+      generationRougeL?: number | null;
     } | null;
   } | null;
   gpuMetrics?: GpuMetric[] | null;
@@ -379,6 +394,8 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
                   { label: "Device", value: String(runtimeSummary?.selectedGpu ?? "--") },
                   { label: "Mode", value: runtimeSummary?.multiGpu ? "Multi-GPU" : "Single GPU" },
                   { label: "Batch", value: `${formatNumber(progress?.perDeviceTrainBatchSize)} × ${formatNumber(progress?.gradientAccumulationSteps)} acc` },
+                  { label: "LoRA", value: `r=${formatNumber(runtimeSummary?.loraRank)} / a=${formatNumber(runtimeSummary?.loraAlpha)}` },
+                  { label: "Layers", value: String(runtimeSummary?.targetModuleStrategy ?? "--") },
                   { label: "Free memory", value: `${formatNumber(runtimeSummary?.selectedGpuFreeMb)} MB` },
                   { label: "Context", value: `${formatNumber(runtimeSummary?.maxSeqLength)} tokens` },
                 ].map(({ label, value }) => (
@@ -423,6 +440,9 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
             <p className="text-xs uppercase tracking-[0.2em] text-black/45">Data pipeline</p>
             <p className="mt-2 text-sm text-black/80">
               {formatNumber(runtimeSummary?.datasetNumProc)} token workers · {formatNumber(runtimeSummary?.dataloaderWorkers)} loader workers
+            </p>
+            <p className="mt-2 text-sm text-black/60">
+              Eval ratio {formatDecimal(runtimeSummary?.evalRatio, 2)} · held-out generations {formatNumber(runtimeSummary?.evalMaxSamples)} × {formatNumber(runtimeSummary?.evalMaxNewTokens)} tokens.
             </p>
             <p className="mt-2 text-sm text-black/60">
               {runtimeSummary?.ollamaHost
@@ -506,7 +526,7 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <div className="rounded-2xl bg-white p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-black/45">Train loss</p>
             <p className="mt-2 text-sm">{formatDecimal(progress?.trainLoss, 4)}</p>
@@ -518,6 +538,33 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
           <div className="rounded-2xl bg-white p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-black/45">Perplexity</p>
             <p className="mt-2 text-sm">{formatDecimal(metricsSummary?.perplexity, 2)}</p>
+          </div>
+          <div className="rounded-2xl bg-white p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Exact match</p>
+            <p className="mt-2 text-sm">
+              {metricsSummary?.generationExactMatch !== null && metricsSummary?.generationExactMatch !== undefined
+                ? `${formatDecimal((metricsSummary.generationExactMatch ?? 0) * 100, 1)}%`
+                : "--"}
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">Token F1</p>
+            <p className="mt-2 text-sm">
+              {metricsSummary?.generationTokenF1 !== null && metricsSummary?.generationTokenF1 !== undefined
+                ? `${formatDecimal((metricsSummary.generationTokenF1 ?? 0) * 100, 1)}%`
+                : "--"}
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-black/45">ROUGE-L</p>
+            <p className="mt-2 text-sm">
+              {metricsSummary?.generationRougeL !== null && metricsSummary?.generationRougeL !== undefined
+                ? `${formatDecimal((metricsSummary.generationRougeL ?? 0) * 100, 1)}%`
+                : "--"}
+            </p>
+            <p className="mt-1 text-xs text-black/55">
+              {metricsSummary?.generationSampleCount ? `${formatNumber(metricsSummary.generationSampleCount)} held-out samples` : ""}
+            </p>
           </div>
           <div className="rounded-2xl bg-white p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-black/45">Learning rate</p>

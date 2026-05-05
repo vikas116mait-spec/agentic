@@ -7,17 +7,6 @@ import { pythonApiFetch } from "@/lib/python-api";
 
 type Message = { role: "user" | "assistant"; content: string };
 
-function buildPrompt(messages: Message[], systemPrompt: string): string {
-  const lines: string[] = [];
-  if (systemPrompt.trim()) {
-    lines.push(`System: ${systemPrompt.trim()}\n`);
-  }
-  for (const m of messages) {
-    lines.push(`${m.role === "user" ? "User" : "Assistant"}: ${m.content}`);
-  }
-  return lines.join("\n");
-}
-
 export function TestModelPanel({
   fineTunedModel,
   modelProvider,
@@ -55,14 +44,16 @@ export function TestModelPanel({
     setError(null);
 
     try {
-      const prompt = buildPrompt(history, systemPrompt);
       const result = await pythonApiFetch<{ tunedOutput: string | null; baseOutput: string | null }>(
         "/playground/run",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            prompt,
+            prompt: userMsg.content,
+            systemPrompt,
+            messages: history,
+            singleTurn: true,
             baseModel: effectiveModel,
             baseModelProvider: effectiveProvider,
           }),
@@ -168,6 +159,10 @@ export function TestModelPanel({
       )}
 
       {error && <p className="text-sm text-danger">{error}</p>}
+
+      <p className="text-xs text-black/45">
+        Each send is tested independently. Previous turns stay visible here for reference, but only your latest message is sent to the model.
+      </p>
 
       {/* Input row */}
       <div className="flex gap-2">

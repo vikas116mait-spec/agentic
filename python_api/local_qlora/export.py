@@ -55,15 +55,31 @@ def ensure_ollama_runtime_ready(raw: str | None = None) -> dict[str, Any]:
     return summary
 
 
-def write_ollama_modelfile(gguf_path: str) -> str:
+def write_ollama_modelfile(gguf_path: str, *, inference_parameters: dict[str, Any] | None = None) -> str:
     resolved_gguf = Path(gguf_path).expanduser().resolve()
     modelfile_path = resolved_gguf.parent / "Modelfile"
-    modelfile_path.write_text(
-        f"FROM {resolved_gguf}\n"
-        'PARAMETER stop "<|im_end|>"\n'
-        'PARAMETER stop "<|eot_id|>"\n',
-        encoding="utf-8",
-    )
+    parameter_lines: list[str] = [f"FROM {resolved_gguf}"]
+
+    supported_parameters = {
+        "temperature": float,
+        "top_p": float,
+        "top_k": int,
+        "repeat_penalty": float,
+        "num_ctx": int,
+    }
+    for key, caster in supported_parameters.items():
+        raw_value = (inference_parameters or {}).get(key)
+        if raw_value is None:
+            continue
+        try:
+            value = caster(raw_value)
+        except (TypeError, ValueError):
+            continue
+        parameter_lines.append(f"PARAMETER {key} {value}")
+
+    parameter_lines.append('PARAMETER stop "<|im_end|>"')
+    parameter_lines.append('PARAMETER stop "<|eot_id|>"')
+    modelfile_path.write_text("\n".join(parameter_lines) + "\n", encoding="utf-8")
     return str(modelfile_path)
 
 
@@ -200,10 +216,15 @@ def export_saved_adapter_to_gguf(
         shutil.rmtree(merged_dir, ignore_errors=True)
 
 
-def push_to_ollama(gguf_path: str, model_name: str) -> None:
+def push_to_ollama(
+    gguf_path: str,
+    model_name: str,
+    *,
+    inference_parameters: dict[str, Any] | None = None,
+) -> None:
     """Register the GGUF with local Ollama under model_name."""
     runtime = ensure_ollama_runtime_ready()
-    modelfile_path = write_ollama_modelfile(gguf_path)
+    modelfile_path = write_ollama_modelfile(gguf_path, inference_parameters=inference_parameters)
     result = subprocess.run(
         ["ollama", "create", model_name, "-f", modelfile_path],
         env=_ollama_cli_env(runtime["host"]),

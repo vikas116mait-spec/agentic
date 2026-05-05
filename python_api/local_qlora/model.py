@@ -9,6 +9,34 @@ from python_api.debug_log import write_debug_log
 from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.store import ROOT
 
+_ATTENTION_TARGET_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "query_key_value",
+    "c_attn",
+    "c_proj",
+    "out_proj",
+    "Wqkv",
+]
+
+_MLP_TARGET_MODULES = [
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+    "dense",
+    "dense_h_to_4h",
+    "dense_4h_to_h",
+    "fc1",
+    "fc2",
+    "w1",
+    "w2",
+    "w3",
+]
+
+_TARGET_MODULE_STRATEGIES = {"auto", "attention_only", "attention_mlp", "expanded"}
+
 
 def local_training_enabled() -> bool:
     return os.environ.get("LOCAL_TRAINING_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -68,16 +96,71 @@ def _unsloth_error_supports_fallback(error: Exception) -> bool:
     )
 
 
-def _resolve_target_modules(model_id: str, override: list[str] | None = None) -> list[str]:
-    if override:
-        return override
+def _normalize_target_module_strategy(value: str | None) -> str:
+    normalized = (value or "auto").strip().lower()
+    if normalized in _TARGET_MODULE_STRATEGIES:
+        return normalized
+    return "auto"
 
+
+def _family_default_target_modules(model_id: str) -> list[str]:
     lowered = model_id.lower()
     if "phi" in lowered:
         return ["q_proj", "k_proj", "v_proj", "dense", "fc1", "fc2"]
     if "falcon" in lowered:
         return ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"]
+    if any(family in lowered for family in ("gpt2", "gpt-j", "gpt-neox", "starcoder")):
+        return ["c_attn", "c_proj", "fc1", "fc2"]
     return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+
+def _supported_target_modules_for_strategy(model_id: str, strategy: str) -> list[str]:
+    family_defaults = _family_default_target_modules(model_id)
+    if strategy == "attention_only":
+        family_attention = [name for name in family_defaults if name in _ATTENTION_TARGET_MODULES]
+        return family_attention or _ATTENTION_TARGET_MODULES
+    if strategy == "expanded":
+        return list(dict.fromkeys(family_defaults + _ATTENTION_TARGET_MODULES + _MLP_TARGET_MODULES))
+    if strategy == "attention_mlp":
+        return list(dict.fromkeys(family_defaults + _ATTENTION_TARGET_MODULES + _MLP_TARGET_MODULES))
+    return family_defaults
+
+
+def _discover_model_leaf_names(model: Any) -> set[str]:
+    discovered: set[str] = set()
+    for module_name, module in getattr(model, "named_modules", lambda: [])():
+        if not module_name:
+            continue
+        try:
+            if any(True for _ in module.children()):
+                continue
+        except Exception:
+            continue
+        leaf_name = module_name.rsplit(".", 1)[-1]
+        discovered.add(leaf_name)
+    return discovered
+
+
+def _resolve_target_modules(
+    model_id: str,
+    override: list[str] | None = None,
+    *,
+    model: Any | None = None,
+    strategy: str | None = None,
+) -> list[str]:
+    if override:
+        return override
+
+    normalized_strategy = _normalize_target_module_strategy(strategy)
+    candidates = _supported_target_modules_for_strategy(model_id, normalized_strategy)
+    if model is None:
+        return candidates
+
+    available_leaf_names = _discover_model_leaf_names(model)
+    matched = [name for name in candidates if name in available_leaf_names]
+    if matched:
+        return matched
+    return candidates
 
 
 def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, Any]:
@@ -95,6 +178,7 @@ def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, An
         )
 
     hyperparameters = config.resolved_hyperparameters()
+    target_module_strategy = _normalize_target_module_strategy(hyperparameters.get("target_module_strategy"))
     workspace_compile_cache = ROOT / "unsloth_compiled_cache"
     configured_compile_location = os.environ.get("UNSLOTH_COMPILE_LOCATION")
 
@@ -130,7 +214,11 @@ def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, An
                 r=int(hyperparameters["lora_r"]),
                 lora_alpha=int(hyperparameters["lora_alpha"]),
                 lora_dropout=float(hyperparameters["lora_dropout"]),
-                target_modules=_resolve_target_modules(config.base_model),
+                target_modules=_resolve_target_modules(
+                    config.base_model,
+                    model=model,
+                    strategy=target_module_strategy,
+                ),
                 bias="none",
                 use_gradient_checkpointing="unsloth",  # saves extra 30% VRAM vs standard
                 random_state=config.seed,
@@ -226,6 +314,10 @@ def load_quantized_model(config: LocalQLoraJobConfig) -> tuple[Any, Any, Any, An
         lora_dropout=float(hyperparameters["lora_dropout"]),
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=_resolve_target_modules(config.base_model),
+        target_modules=_resolve_target_modules(
+            config.base_model,
+            model=model,
+            strategy=target_module_strategy,
+        ),
     )
     return model, tokenizer, peft_config, torch

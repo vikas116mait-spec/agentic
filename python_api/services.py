@@ -506,12 +506,32 @@ def _display_ollama_model_name(model_name: str) -> str:
     return normalized if ":" in normalized else f"{normalized}:latest"
 
 
+def _local_ollama_inference_parameters(job: dict[str, Any]) -> dict[str, Any]:
+    hyperparameters = job.get("hyperparametersJson") if isinstance(job.get("hyperparametersJson"), dict) else {}
+    parameters: dict[str, Any] = {}
+    mappings = {
+        "temperature": "inference_temperature",
+        "top_p": "inference_top_p",
+        "top_k": "inference_top_k",
+        "repeat_penalty": "inference_repeat_penalty",
+        "num_ctx": "max_seq_length",
+    }
+    for parameter_name, hyperparameter_name in mappings.items():
+        value = hyperparameters.get(hyperparameter_name)
+        if value is not None:
+            parameters[parameter_name] = value
+    return parameters
+
+
 def _materialize_local_modelfile(job: dict[str, Any]) -> str | None:
     gguf_path = _find_on_disk_gguf(job)
     if gguf_path:
         from python_api.local_qlora.export import write_ollama_modelfile
 
-        return write_ollama_modelfile(gguf_path)
+        return write_ollama_modelfile(
+            gguf_path,
+            inference_parameters=_local_ollama_inference_parameters(job),
+        )
     return _find_on_disk_modelfile(job)
 
 
@@ -1630,7 +1650,66 @@ def _preflight_ollama_gpu() -> None:
         logger.exception("Unexpected Ollama auto-manage failure")
 
 
-def run_model(prompt: str, model: str, provider: str | None = None) -> str:
+def _normalize_playground_messages(
+    prompt: str,
+    messages: list[dict[str, Any]] | None = None,
+    *,
+    system_prompt: str | None = None,
+    single_turn: bool = False,
+) -> tuple[list[dict[str, str]], str]:
+    normalized_messages: list[dict[str, str]] = []
+
+    if system_prompt and system_prompt.strip():
+        normalized_messages.append({"role": "system", "content": system_prompt.strip()})
+
+    for message in messages or []:
+        role = str(message.get("role", "user")).strip().lower() or "user"
+        if role not in {"system", "user", "assistant"}:
+            role = "user"
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        normalized_messages.append({"role": role, "content": content})
+
+    prompt_text = str(prompt or "").strip()
+
+    if single_turn:
+        system_messages = [message for message in normalized_messages if message["role"] == "system"]
+        last_user_message = next(
+            (message for message in reversed(normalized_messages) if message["role"] == "user"),
+            None,
+        )
+        if last_user_message is None:
+            if not prompt_text:
+                raise ApiError("PLAYGROUND_RUN_FAILED", "Prompt is required.", 400)
+            last_user_message = {"role": "user", "content": prompt_text}
+        compact_messages = ([system_messages[0]] if system_messages else []) + [last_user_message]
+        return compact_messages, last_user_message["content"]
+
+    if not any(message["role"] != "system" for message in normalized_messages):
+        if not prompt_text:
+            raise ApiError("PLAYGROUND_RUN_FAILED", "Prompt is required.", 400)
+        normalized_messages.append({"role": "user", "content": prompt_text})
+
+    if prompt_text:
+        prompt_preview = prompt_text
+    else:
+        prompt_preview = next(
+            (
+                message["content"]
+                for message in reversed(normalized_messages)
+                if message["role"] in {"user", "assistant"}
+            ),
+            normalized_messages[-1]["content"],
+        )
+
+    return normalized_messages, prompt_preview
+
+
+def run_model_messages(messages: list[dict[str, str]], model: str, provider: str | None = None) -> str:
+    if not messages:
+        raise ApiError("PLAYGROUND_RUN_FAILED", "Prompt is required.", 400)
+
     resolved_provider = get_model_provider(provider)
     is_ollama = resolved_provider == "ollama"
 
@@ -1640,7 +1719,7 @@ def run_model(prompt: str, model: str, provider: str | None = None) -> str:
     def _invoke() -> str:
         response = get_model_client(provider, model=model).chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
         )
         return response.choices[0].message.content or ""
 
@@ -1658,6 +1737,10 @@ def run_model(prompt: str, model: str, provider: str | None = None) -> str:
             logger.info("Ollama auto-manage retry unavailable: %s", manage_exc)
             raise exc from manage_exc
         return _invoke()
+
+
+def run_model(prompt: str, model: str, provider: str | None = None) -> str:
+    return run_model_messages([{"role": "user", "content": prompt}], model, provider)
 
 
 def normalize_job_status(status: str | None) -> str:
@@ -1877,6 +1960,7 @@ def _build_local_training_job_config(
         merged_hyperparameters.setdefault("learning_rate", learning_rate)
     if per_device_batch_size is not None:
         merged_hyperparameters.setdefault("per_device_train_batch_size", per_device_batch_size)
+    eval_ratio_override = merged_hyperparameters.pop("eval_ratio", None)
     _write_job_readme(working_dir)
     return LocalQLoraJobConfig(
         job_id=job_id,
@@ -1896,7 +1980,7 @@ def _build_local_training_job_config(
         allow_cpu_fallback=os.environ.get("LOCAL_TRAINING_ALLOW_CPU_FALLBACK", "0").strip().lower()
         in {"1", "true", "yes", "on"},
         seed=int(os.environ.get("LOCAL_TRAINING_SEED", "42")),
-        eval_ratio=float(os.environ.get("LOCAL_TRAINING_EVAL_RATIO", "0.1")),
+        eval_ratio=float(eval_ratio_override) if eval_ratio_override is not None else float(os.environ.get("LOCAL_TRAINING_EVAL_RATIO", "0.1")),
         export_gguf=export_gguf,
         gguf_quantization=gguf_quantization,
         push_to_ollama=push_to_ollama,
@@ -2003,6 +2087,10 @@ def create_job_record(
             raise ApiError("MODEL_PROVIDER_NOT_CONFIGURED", str(error), 400) from error
         submission = spawn_local_training_job(config, runtime_summary)
         now = utc_now_iso()
+        resolved_hyperparameters = {
+            **config.resolved_hyperparameters(),
+            "eval_ratio": config.eval_ratio,
+        }
         job = {
             "id": job_id,
             "datasetId": dataset_id,
@@ -2019,7 +2107,7 @@ def create_job_record(
             "trainedTokens": None,
             "estimatedFinishAt": None,
             "resultFilesJson": submission["resultFilesJson"],
-            "hyperparametersJson": hyperparameters,
+            "hyperparametersJson": resolved_hyperparameters,
             "lastSyncedAt": now,
             "createdAt": now,
             "updatedAt": now,
@@ -2598,13 +2686,25 @@ def run_playground_prompt(
     fine_tuned_model: str | None = None,
     base_provider: str | None = None,
     fine_tuned_provider: str | None = None,
+    *,
+    messages: list[dict[str, Any]] | None = None,
+    system_prompt: str | None = None,
+    single_turn: bool = False,
 ) -> dict[str, Any]:
-    if not prompt.strip():
-        raise ApiError("PLAYGROUND_RUN_FAILED", "Prompt is required.", 400)
+    inference_messages, prompt_preview = _normalize_playground_messages(
+        prompt,
+        messages,
+        system_prompt=system_prompt,
+        single_turn=single_turn,
+    )
 
     try:
-        base_output = run_model(prompt, base_model, base_provider)
-        tuned_output = run_model(prompt, fine_tuned_model, fine_tuned_provider) if fine_tuned_model else None
+        base_output = run_model_messages(inference_messages, base_model, base_provider)
+        tuned_output = (
+            run_model_messages(inference_messages, fine_tuned_model, fine_tuned_provider)
+            if fine_tuned_model
+            else None
+        )
     except ApiError:
         raise
     except Exception as error:  # pragma: no cover
@@ -2616,7 +2716,7 @@ def run_playground_prompt(
         "baseModelProvider": get_model_provider(base_provider) if base_provider else get_model_provider(),
         "fineTunedModel": fine_tuned_model,
         "fineTunedModelProvider": get_model_provider(fine_tuned_provider) if fine_tuned_provider else None,
-        "prompt": prompt,
+        "prompt": prompt_preview,
         "baseOutput": base_output,
         "tunedOutput": tuned_output,
         "createdAt": utc_now_iso(),

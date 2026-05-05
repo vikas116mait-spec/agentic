@@ -21,6 +21,14 @@ def _format_messages_record(record: dict[str, Any]) -> str:
     return "\n\n".join(chunks).strip()
 
 
+def _format_generic_messages(messages: list[dict[str, str]], *, add_generation_prompt: bool = False) -> str:
+    chunks = [f"### {message['role'].title()}:\n{message['content']}" for message in messages]
+    if add_generation_prompt:
+        chunks.append("### Assistant:\n")
+        return "\n\n".join(chunks)
+    return "\n\n".join(chunks).strip()
+
+
 def _render_message_content(content: Any) -> str:
     if isinstance(content, list):
         return json.dumps(content, ensure_ascii=False)
@@ -50,7 +58,12 @@ def _record_as_messages(record: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _apply_tokenizer_chat_template(messages: list[dict[str, str]], tokenizer: Any | None) -> str | None:
+def _apply_tokenizer_chat_template(
+    messages: list[dict[str, str]],
+    tokenizer: Any | None,
+    *,
+    add_generation_prompt: bool = False,
+) -> str | None:
     if tokenizer is None:
         return None
 
@@ -59,8 +72,10 @@ def _apply_tokenizer_chat_template(messages: list[dict[str, str]], tokenizer: An
         return None
 
     try:
-        rendered = apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        rendered = apply_chat_template(messages, tokenize=False, add_generation_prompt=add_generation_prompt)
     except TypeError:
+        if add_generation_prompt:
+            return None
         try:
             rendered = apply_chat_template(messages, tokenize=False)
         except Exception:
@@ -80,25 +95,69 @@ def _is_llama3_instruct_model(model_id: str | None) -> bool:
     return "llama-3" in lowered or "llama3" in lowered
 
 
-def _format_llama3_messages(messages: list[dict[str, str]]) -> str:
+def _format_llama3_messages(messages: list[dict[str, str]], *, add_generation_prompt: bool = False) -> str:
     parts = ["<|begin_of_text|>"]
     for message in messages:
         role = message["role"] if message["role"] in {"system", "user", "assistant"} else "user"
         parts.append(
             f"<|start_header_id|>{role}<|end_header_id|>\n\n{message['content']}<|eot_id|>"
         )
+    if add_generation_prompt:
+        parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
     return "".join(parts)
 
 
-def _format_instruction_record(record: dict[str, Any]) -> str:
-    instruction = str(record.get("instruction", "")).strip()
-    input_text = str(record.get("input", "")).strip()
-    output_text = str(record.get("output", "")).strip()
-    parts = [f"### Instruction:\n{instruction}"]
-    if input_text:
-        parts.append(f"### Input:\n{input_text}")
-    parts.append(f"### Response:\n{output_text}")
-    return "\n\n".join(parts).strip()
+def render_messages_for_model(
+    messages: list[dict[str, str]],
+    *,
+    model_id: str | None = None,
+    tokenizer: Any | None = None,
+    add_generation_prompt: bool = False,
+) -> str:
+    templated_text = _apply_tokenizer_chat_template(
+        messages,
+        tokenizer,
+        add_generation_prompt=add_generation_prompt,
+    )
+    if templated_text:
+        return templated_text
+    if _is_llama3_instruct_model(model_id):
+        return _format_llama3_messages(messages, add_generation_prompt=add_generation_prompt)
+    return _format_generic_messages(messages, add_generation_prompt=add_generation_prompt)
+
+
+def build_evaluation_example(
+    record: dict[str, Any],
+    *,
+    model_id: str | None = None,
+    tokenizer: Any | None = None,
+) -> dict[str, Any] | None:
+    messages = _record_as_messages(record)
+    assistant_index = next(
+        (index for index in range(len(messages) - 1, -1, -1) if messages[index]["role"] == "assistant"),
+        None,
+    )
+    if assistant_index is None:
+        return None
+
+    prompt_messages = messages[:assistant_index]
+    if not prompt_messages:
+        return None
+
+    target_text = messages[assistant_index]["content"].strip()
+    if not target_text:
+        return None
+
+    return {
+        "messages": prompt_messages,
+        "prompt": render_messages_for_model(
+            prompt_messages,
+            model_id=model_id,
+            tokenizer=tokenizer,
+            add_generation_prompt=True,
+        ),
+        "target": target_text,
+    }
 
 
 def format_training_record(
@@ -107,14 +166,14 @@ def format_training_record(
     tokenizer: Any | None = None,
 ) -> dict[str, str]:
     messages = _record_as_messages(record)
-    templated_text = _apply_tokenizer_chat_template(messages, tokenizer)
-    if templated_text:
-        return {"text": templated_text}
-    if _is_llama3_instruct_model(model_id):
-        return {"text": _format_llama3_messages(messages)}
-    if isinstance(record.get("messages"), list):
-        return {"text": _format_messages_record(record)}
-    return {"text": _format_instruction_record(record)}
+    return {
+        "text": render_messages_for_model(
+            messages,
+            model_id=model_id,
+            tokenizer=tokenizer,
+            add_generation_prompt=False,
+        )
+    }
 
 
 def load_training_records(file_path: str | Path) -> list[dict[str, Any]]:
@@ -139,7 +198,11 @@ def split_training_records(records: list[dict[str, Any]], *, eval_ratio: float, 
     return train_records, eval_records
 
 
-def build_sft_datasets(config: LocalQLoraJobConfig, *, tokenizer: Any | None = None) -> tuple[Any, Any, dict[str, int]]:
+def build_sft_datasets(
+    config: LocalQLoraJobConfig,
+    *,
+    tokenizer: Any | None = None,
+) -> tuple[Any, Any, dict[str, int], list[dict[str, Any]]]:
     try:
         from datasets import Dataset
     except ImportError as error:  # pragma: no cover
@@ -163,4 +226,4 @@ def build_sft_datasets(config: LocalQLoraJobConfig, *, tokenizer: Any | None = N
         "totalRecords": len(records),
         "trainRecords": len(train_records),
         "evalRecords": len(eval_records),
-    }
+    }, eval_records

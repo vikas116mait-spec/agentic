@@ -12,7 +12,8 @@ from unittest.mock import patch
 
 from python_api.local_qlora import ensure_local_training_ready, inspect_local_training_runtime, spawn_local_training_job
 from python_api.local_qlora.config import LocalQLoraJobConfig
-from python_api.local_qlora.data import format_training_record
+from python_api.local_qlora.data import build_evaluation_example, format_training_record
+from python_api.local_qlora.export import write_ollama_modelfile
 from python_api.local_qlora.model import _resolve_target_modules
 from python_api.local_qlora.train import LocalProgressCallback, _recommended_dataset_num_proc, run_local_qlora_training
 from python_api.services import _default_local_ollama_model_name, _default_model_profiles, _ensure_model_profiles_initialized
@@ -225,8 +226,10 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
         self.assertEqual(resolved["max_steps"], 60)
         self.assertEqual(resolved["gradient_accumulation_steps"], 4)
         self.assertEqual(resolved["max_seq_length"], 1024)
-        self.assertEqual(resolved["lora_alpha"], 16)
+        self.assertEqual(resolved["lora_alpha"], 32)
         self.assertEqual(resolved["lora_dropout"], 0.0)
+        self.assertEqual(resolved["target_module_strategy"], "attention_mlp")
+        self.assertEqual(resolved["eval_max_samples"], 3)
 
     def test_job_config_persists_portable_upload_paths_and_resolves_them_on_load(self) -> None:
         DATASETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -292,6 +295,8 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
         self.assertEqual(resolved["per_device_train_batch_size"], 1)
         self.assertEqual(resolved["gradient_accumulation_steps"], 8)
         self.assertEqual(resolved["learning_rate"], 5e-5)
+        self.assertEqual(resolved["lora_r"], 48)
+        self.assertEqual(resolved["target_module_strategy"], "expanded")
 
     def test_llama32_instruction_records_use_chat_headers(self) -> None:
         formatted = format_training_record(
@@ -328,11 +333,73 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
             "assistant=It is a contract dispute summary.::tokenize=False::gen=False",
         )
 
+    def test_instruction_records_use_consistent_chat_fallback_without_template(self) -> None:
+        formatted = format_training_record(
+            {
+                "instruction": "Say hello",
+                "output": "Hello there!",
+            },
+            "Qwen/Qwen2.5-3B-Instruct",
+        )
+
+        self.assertEqual(
+            formatted["text"],
+            "### User:\nSay hello\n\n### Assistant:\nHello there!",
+        )
+
+    def test_build_evaluation_example_uses_generation_prompt(self) -> None:
+        example = build_evaluation_example(
+            {
+                "instruction": "Summarize this case",
+                "input": "A short contract dispute.",
+                "output": "It is a contract dispute summary.",
+            },
+            model_id="Qwen/Qwen2.5-3B-Instruct",
+            tokenizer=FakeChatTemplateTokenizer(),
+        )
+
+        self.assertIsNotNone(example)
+        self.assertEqual(example["target"], "It is a contract dispute summary.")
+        self.assertIn("gen=True", example["prompt"])
+
     def test_falcon_models_use_falcon_target_modules(self) -> None:
         self.assertEqual(
             _resolve_target_modules("tiiuae/Falcon3-3B-Instruct"),
             ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"],
         )
+
+    def test_target_module_strategy_can_limit_to_attention_layers(self) -> None:
+        self.assertEqual(
+            _resolve_target_modules(
+                "Qwen/Qwen2.5-3B-Instruct",
+                strategy="attention_only",
+            ),
+            ["q_proj", "k_proj", "v_proj", "o_proj"],
+        )
+
+    def test_ollama_modelfile_includes_inference_parameters_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gguf_path = Path(temp_dir) / "model.gguf"
+            modelfile = Path(
+                write_ollama_modelfile(
+                    str(gguf_path),
+                    inference_parameters={
+                        "temperature": 0.18,
+                        "top_p": 0.88,
+                        "top_k": 40,
+                        "repeat_penalty": 1.1,
+                        "num_ctx": 1536,
+                    },
+                )
+            )
+
+            contents = modelfile.read_text(encoding="utf-8")
+
+        self.assertIn("PARAMETER temperature 0.18", contents)
+        self.assertIn("PARAMETER top_p 0.88", contents)
+        self.assertIn("PARAMETER top_k 40", contents)
+        self.assertIn("PARAMETER repeat_penalty 1.1", contents)
+        self.assertIn("PARAMETER num_ctx 1536", contents)
 
 
 class LocalTrainingWarningsTests(unittest.TestCase):
@@ -374,7 +441,11 @@ class LocalTrainingWarningsTests(unittest.TestCase):
             patch("python_api.local_qlora.train._instantiate_trainer", side_effect=fake_trainer_factory),
             patch(
                 "python_api.local_qlora.train.summarize_eval_metrics",
-                return_value={"evalLoss": 0.25, "perplexity": 1.28},
+                return_value={"evalLoss": 0.25, "perplexity": 1.28, "generationExactMatch": 0.5},
+            ),
+            patch(
+                "python_api.local_qlora.train.run_holdout_generation_evaluation",
+                return_value={"sampleCount": 2, "exactMatch": 0.5, "tokenF1": 0.6, "rougeL": 0.55},
             ),
             patch("python_api.local_qlora.train.local_gpu_count", return_value=1),
         ]

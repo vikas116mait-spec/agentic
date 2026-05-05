@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, UploadFile
@@ -92,7 +92,15 @@ class PlaygroundRunRequest(BaseModel):
     baseModelProvider: str | None = None
     fineTunedModel: str | None = None
     fineTunedModelProvider: str | None = None
-    prompt: str
+    prompt: str = ""
+    systemPrompt: str | None = None
+    messages: list["PlaygroundMessage"] | None = None
+    singleTurn: bool = False
+
+
+class PlaygroundMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
 
 
 class CreateAgentRunRequest(BaseModel):
@@ -365,12 +373,20 @@ def download_job(job_id: str, type: str = "adapter"):
 @app.post("/playground/run")
 def run_playground(request: PlaygroundRunRequest):
     try:
+        messages = (
+            [{"role": message.role, "content": message.content} for message in request.messages]
+            if request.messages
+            else None
+        )
         return run_playground_prompt(
             request.prompt,
             request.baseModel,
             request.fineTunedModel,
             request.baseModelProvider,
             request.fineTunedModelProvider,
+            messages=messages,
+            system_prompt=request.systemPrompt,
+            single_turn=request.singleTurn,
         )
     except Exception as error:
         return handle_api_error(error)
