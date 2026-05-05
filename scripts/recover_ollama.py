@@ -42,6 +42,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from python_api.store import resolve_job_storage_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -71,7 +73,9 @@ def _read_config(job_dir: Path) -> dict:
 
 def _resolve_adapter_dir(config: dict, job_dir: Path) -> Path:
     adapter_dir_raw = config.get("modelOutputPath") or str(job_dir / "artifacts" / "adapter")
-    adapter_dir = Path(adapter_dir_raw)
+    adapter_dir = resolve_job_storage_path(adapter_dir_raw) or Path(adapter_dir_raw)
+    if not adapter_dir.is_absolute():
+        adapter_dir = (job_dir.parent.parent / adapter_dir).resolve()
     if not (adapter_dir / "adapter_config.json").is_file():
         raise SystemExit(
             f"Expected PEFT adapter at {adapter_dir}, but adapter_config.json is missing."
@@ -145,7 +149,7 @@ def _convert_to_gguf(
 def _write_modelfile(gguf_path: Path) -> Path:
     modelfile_path = gguf_path.parent / "Modelfile"
     modelfile_path.write_text(
-        f'FROM "{gguf_path}"\n'
+        f"FROM {gguf_path.resolve()}\n"
         'PARAMETER stop "<|im_end|>"\n'
         'PARAMETER stop "<|eot_id|>"\n',
         encoding="utf-8",

@@ -10,12 +10,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from python_api.local_qlora import ensure_local_training_ready, spawn_local_training_job
+from python_api.local_qlora import ensure_local_training_ready, inspect_local_training_runtime, spawn_local_training_job
 from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.local_qlora.data import format_training_record
 from python_api.local_qlora.model import _resolve_target_modules
 from python_api.local_qlora.train import LocalProgressCallback, _recommended_dataset_num_proc, run_local_qlora_training
 from python_api.services import _default_local_ollama_model_name, _default_model_profiles, _ensure_model_profiles_initialized
+from python_api.store import DATASETS_DIR, JOBS_DIR
 
 
 def runtime_summary(*, unsloth_available: bool = True) -> dict[str, object]:
@@ -29,6 +30,10 @@ def runtime_summary(*, unsloth_available: bool = True) -> dict[str, object]:
             "trl": True,
             "accelerate": True,
             "bitsandbytes": True,
+        },
+        "compilerTools": {
+            "cc": "/usr/bin/gcc",
+            "cxx": "/usr/bin/g++",
         },
         "gpuCount": 1,
         "unslothAvailable": unsloth_available,
@@ -118,6 +123,28 @@ class LocalTrainingPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Ollama is not reachable"):
                 ensure_local_training_ready(export_gguf=True, push_to_ollama=True)
 
+    def test_requires_compiler_toolchain_when_unsloth_is_available(self) -> None:
+        summary = runtime_summary()
+        summary["compilerTools"] = {"cc": None, "cxx": None}
+
+        with patch("python_api.local_qlora.local_training_enabled", return_value=True), patch(
+            "python_api.local_qlora.configured_local_training_python", return_value=sys.executable
+        ), patch("python_api.local_qlora._probe_training_runtime", return_value=summary):
+            with self.assertRaisesRegex(RuntimeError, "native compiler toolchain"):
+                ensure_local_training_ready()
+
+    def test_runtime_inspection_warns_when_compiler_is_missing(self) -> None:
+        summary = runtime_summary()
+        summary["compilerTools"] = {"cc": None, "cxx": None}
+
+        with patch("python_api.local_qlora.local_training_enabled", return_value=True), patch(
+            "python_api.local_qlora.configured_local_training_python", return_value=sys.executable
+        ), patch("python_api.local_qlora._probe_training_runtime", return_value=summary):
+            payload = inspect_local_training_runtime()
+
+        warning_messages = payload.get("warnings") or []
+        self.assertTrue(any("compiler toolchain" in str(message) for message in warning_messages))
+
 
 class LocalTrainingDefaultsTests(unittest.TestCase):
     def test_auto_generated_ollama_name_uses_dataset_model_and_job_id(self) -> None:
@@ -200,6 +227,46 @@ class LocalTrainingDefaultsTests(unittest.TestCase):
         self.assertEqual(resolved["max_seq_length"], 1024)
         self.assertEqual(resolved["lora_alpha"], 16)
         self.assertEqual(resolved["lora_dropout"], 0.0)
+
+    def test_job_config_persists_portable_upload_paths_and_resolves_them_on_load(self) -> None:
+        DATASETS_DIR.mkdir(parents=True, exist_ok=True)
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory(dir=str(DATASETS_DIR)) as dataset_dir, tempfile.TemporaryDirectory(
+            dir=str(JOBS_DIR)
+        ) as job_dir:
+            dataset_path = Path(dataset_dir) / "dataset.jsonl"
+            dataset_path.write_text('{"messages":[{"role":"user","content":"Hi"}]}\n', encoding="utf-8")
+            working_dir = Path(job_dir)
+
+            config = LocalQLoraJobConfig(
+                job_id="job-portable",
+                dataset_id="dataset-1",
+                dataset_name="demo-dataset",
+                dataset_path=str(dataset_path),
+                base_model="Qwen/Qwen2.5-1.5B-Instruct",
+                working_dir=str(working_dir),
+                output_dir=str(working_dir / "artifacts"),
+                model_output_path=str(working_dir / "adapter"),
+                config_path=str(working_dir / "local_train_config.json"),
+                status_path=str(working_dir / "local_train_status.json"),
+                events_path=str(working_dir / "local_train_events.jsonl"),
+                log_path=str(working_dir / "local_train.log"),
+                metrics_path=str(working_dir / "local_train_metrics.json"),
+            )
+
+            payload = config.to_dict()
+            self.assertEqual(payload["datasetPath"], f"datasets/{Path(dataset_dir).name}/dataset.jsonl")
+            self.assertEqual(payload["configPath"], f"jobs/{working_dir.name}/local_train_config.json")
+            self.assertEqual(payload["statusPath"], f"jobs/{working_dir.name}/local_train_status.json")
+
+            config_path = working_dir / "local_train_config.json"
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = LocalQLoraJobConfig.from_file(config_path)
+
+        self.assertEqual(loaded.dataset_path, str(dataset_path))
+        self.assertEqual(loaded.config_path, str(config_path))
+        self.assertEqual(loaded.status_path, str(working_dir / "local_train_status.json"))
 
     def test_quality_preset_still_allows_manual_override(self) -> None:
         config = LocalQLoraJobConfig(
@@ -312,11 +379,22 @@ class LocalTrainingWarningsTests(unittest.TestCase):
             patch("python_api.local_qlora.train.local_gpu_count", return_value=1),
         ]
 
-    def test_training_succeeds_with_warning_when_unsloth_is_missing(self) -> None:
+    def test_training_exports_gguf_via_fallback_when_unsloth_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = self.make_config(temp_dir)
+            config = self.make_config(temp_dir, push_to_ollama=False)
+            gguf_path = Path(config.working_dir) / "gguf" / "model.q8_0.gguf"
+            modelfile_path = gguf_path.parent / "Modelfile"
             patches = self.common_patches(peft_config=object())
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patch(
+                "python_api.local_qlora.export.export_saved_adapter_to_gguf",
+                side_effect=lambda **kwargs: str(gguf_path),
+            ), patch(
+                "python_api.local_qlora.export.write_ollama_modelfile",
+                side_effect=lambda *args, **kwargs: str(modelfile_path),
+            ):
+                gguf_path.parent.mkdir(parents=True, exist_ok=True)
+                gguf_path.write_text("gguf", encoding="utf-8")
+                modelfile_path.write_text("FROM demo", encoding="utf-8")
                 run_local_qlora_training(config)
 
             status = json.loads(Path(config.status_path).read_text(encoding="utf-8"))
@@ -325,9 +403,10 @@ class LocalTrainingWarningsTests(unittest.TestCase):
 
             self.assertEqual(status["status"], "succeeded")
             self.assertFalse(status["ollamaRegistered"])
-            self.assertTrue(any("Unsloth" in warning for warning in warning_messages))
+            self.assertEqual(warning_messages, [])
             self.assertIn("local_adapter", result_types)
-            self.assertNotIn("local_gguf", result_types)
+            self.assertIn("local_gguf", result_types)
+            self.assertIn("local_modelfile", result_types)
 
     def test_training_keeps_gguf_when_ollama_registration_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -366,6 +445,48 @@ class LocalTrainingWarningsTests(unittest.TestCase):
             self.assertTrue(any("Ollama registration failed" in warning for warning in warning_messages))
             self.assertIn("local_gguf", result_types)
             self.assertIn("local_modelfile", result_types)
+
+    def test_training_recovers_when_unsloth_gguf_export_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = self.make_config(temp_dir)
+            config.gguf_quantization = "q8_0"
+            gguf_path = Path(config.working_dir) / "gguf" / "model.q8_0.gguf"
+            modelfile_path = gguf_path.parent / "Modelfile"
+
+            def fake_fallback_export(**kwargs: object) -> str:
+                gguf_path.parent.mkdir(parents=True, exist_ok=True)
+                gguf_path.write_text("gguf", encoding="utf-8")
+                return str(gguf_path)
+
+            def fake_modelfile(*args: object, **kwargs: object) -> str:
+                modelfile_path.write_text("FROM demo", encoding="utf-8")
+                return str(modelfile_path)
+
+            patches = self.common_patches(peft_config=None)
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patch(
+                "python_api.local_qlora.export.export_gguf",
+                side_effect=RuntimeError("Unsloth: GGUF conversion failed: EOF when reading a line"),
+            ), patch(
+                "python_api.local_qlora.export.export_saved_adapter_to_gguf",
+                side_effect=fake_fallback_export,
+            ), patch(
+                "python_api.local_qlora.export.write_ollama_modelfile",
+                side_effect=fake_modelfile,
+            ), patch(
+                "python_api.local_qlora.export.push_to_ollama",
+            ) as push_mock:
+                run_local_qlora_training(config)
+
+            status = json.loads(Path(config.status_path).read_text(encoding="utf-8"))
+            warning_messages = status.get("warnings") or []
+            result_types = {item["type"] for item in status.get("resultFilesJson") or []}
+
+            self.assertEqual(status["status"], "succeeded")
+            self.assertFalse(warning_messages)
+            self.assertTrue(status["ollamaRegistered"])
+            self.assertIn("local_gguf", result_types)
+            self.assertIn("local_modelfile", result_types)
+            push_mock.assert_called_once()
 
 
 class LocalTrainingSpawnTests(unittest.TestCase):

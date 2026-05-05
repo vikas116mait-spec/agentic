@@ -33,6 +33,7 @@ from python_api.local_qlora import (
     spawn_local_training_job,
 )
 from python_api.local_qlora.config import LocalQLoraJobConfig
+from python_api.local_qlora.state import append_event, read_status_file, write_status_file
 from python_api.store import (
     DATASETS_DIR,
     JOBS_DIR,
@@ -43,6 +44,10 @@ from python_api.store import (
     get_job,
     get_model_profile,
     load_state,
+    resolve_dataset_storage_path,
+    resolve_job_storage_path,
+    serialize_dataset_storage_path,
+    serialize_job_storage_path,
     sort_desc,
     update_state,
     utc_now_iso,
@@ -153,7 +158,9 @@ def _resolve_local_job_path(raw_path: str | None) -> Path:
     if not raw_path:
         raise ApiError("NOT_FOUND", "Local training artifact path is missing.", 404)
 
-    resolved = Path(raw_path).resolve()
+    resolved = resolve_job_storage_path(raw_path)
+    if resolved is None:
+        raise ApiError("NOT_FOUND", "Local training artifact path is missing.", 404)
     jobs_root = JOBS_DIR.resolve()
     try:
         resolved.relative_to(jobs_root)
@@ -170,7 +177,9 @@ def _resolve_dataset_path(raw_path: str | None) -> Path:
     if not raw_path:
         raise ApiError("NOT_FOUND", "Dataset file path is missing.", 404)
 
-    resolved = Path(raw_path).resolve()
+    resolved = resolve_dataset_storage_path(raw_path)
+    if resolved is None:
+        raise ApiError("NOT_FOUND", "Dataset file path is missing.", 404)
     datasets_root = DATASETS_DIR.resolve()
     try:
         resolved.relative_to(datasets_root)
@@ -361,6 +370,10 @@ def _extract_local_modelfile_path(job: dict[str, Any]) -> str | None:
     return _extract_local_artifact_path(job, "local_modelfile")
 
 
+def _extract_local_gguf_path(job: dict[str, Any]) -> str | None:
+    return _extract_local_artifact_path(job, "local_gguf")
+
+
 def _candidate_job_dirs(job: dict[str, Any]) -> list[Path]:
     """Return plausible on-disk roots for a job's artifacts.
 
@@ -372,10 +385,10 @@ def _candidate_job_dirs(job: dict[str, Any]) -> list[Path]:
     for field in ("localArtifactsPath", "localStatusPath", "localConfigPath", "localLogPath"):
         raw = job.get(field)
         if isinstance(raw, str) and raw.strip():
-            try:
-                parent = Path(raw).expanduser().resolve().parent
-            except OSError:
+            resolved = resolve_job_storage_path(raw)
+            if resolved is None:
                 continue
+            parent = resolved.parent
             if parent and parent not in candidates:
                 candidates.append(parent)
     job_id = (job.get("id") or "").strip()
@@ -393,19 +406,218 @@ def _find_on_disk_modelfile(job: dict[str, Any]) -> str | None:
     """Locate a Modelfile on disk for this job, even if `resultFilesJson` is stale."""
 
     recorded = _extract_local_modelfile_path(job)
-    if recorded and Path(recorded).is_file():
-        return recorded
+    resolved_recorded = resolve_job_storage_path(recorded) if recorded else None
+    if resolved_recorded and resolved_recorded.is_file():
+        return str(resolved_recorded)
 
     for root in _candidate_job_dirs(job):
         if not root.exists() or not root.is_dir():
             continue
         try:
-            for candidate in root.rglob("Modelfile"):
+            for candidate in root.rglob("Modelfile*"):
                 if candidate.is_file():
                     return str(candidate)
         except OSError:
             continue
     return None
+
+
+def _find_on_disk_gguf(job: dict[str, Any]) -> str | None:
+    """Locate a GGUF artifact on disk for this job, even if `resultFilesJson` is stale."""
+
+    candidates: list[Path] = []
+    recorded = _extract_local_gguf_path(job)
+    resolved_recorded = resolve_job_storage_path(recorded) if recorded else None
+    if resolved_recorded and resolved_recorded.is_file():
+        candidates.append(resolved_recorded)
+
+    for root in _candidate_job_dirs(job):
+        if not root.exists() or not root.is_dir():
+            continue
+        try:
+            for candidate in root.rglob("*.gguf"):
+                if candidate.is_file():
+                    candidates.append(candidate)
+        except OSError:
+            continue
+
+    unique_candidates: dict[str, Path] = {}
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        unique_candidates[str(resolved)] = resolved
+
+    if not unique_candidates:
+        return None
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return str(max(unique_candidates.values(), key=_mtime))
+
+
+def _upsert_local_result_file(result_files: list[dict[str, Any]], artifact_type: str, path: str | Path) -> None:
+    serialized_path = serialize_job_storage_path(path) or str(path)
+    for artifact in result_files:
+        if isinstance(artifact, dict) and artifact.get("type") == artifact_type:
+            artifact["path"] = serialized_path
+            return
+    result_files.append({"type": artifact_type, "path": serialized_path})
+
+
+def _resolved_ollama_warning(message: str) -> bool:
+    lowered = message.strip().lower()
+    return any(
+        token in lowered
+        for token in (
+            "gguf export failed",
+            "ollama registration failed",
+            "gguf export and ollama registration were skipped",
+            "gguf export was skipped",
+        )
+    )
+
+
+def _filter_resolved_ollama_warnings(warnings: list[Any]) -> list[Any]:
+    filtered: list[Any] = []
+    for warning in warnings:
+        if isinstance(warning, str):
+            if _resolved_ollama_warning(warning):
+                continue
+            filtered.append(warning)
+            continue
+        if isinstance(warning, dict):
+            message = warning.get("message") or warning.get("warning") or warning.get("detail")
+            if isinstance(message, str) and _resolved_ollama_warning(message):
+                continue
+        filtered.append(warning)
+    return filtered
+
+
+def _display_ollama_model_name(model_name: str) -> str:
+    normalized = (model_name or "").strip()
+    if not normalized:
+        return normalized
+    return normalized if ":" in normalized else f"{normalized}:latest"
+
+
+def _materialize_local_modelfile(job: dict[str, Any]) -> str | None:
+    gguf_path = _find_on_disk_gguf(job)
+    if gguf_path:
+        from python_api.local_qlora.export import write_ollama_modelfile
+
+        return write_ollama_modelfile(gguf_path)
+    return _find_on_disk_modelfile(job)
+
+
+def _reconcile_local_ollama_registration(job: dict[str, Any], model_name: str) -> None:
+    job_id = (job.get("id") or "").strip()
+    if not job_id:
+        return
+
+    status_path = resolve_job_storage_path(job.get("localStatusPath")) if job.get("localStatusPath") else None
+    events_path = resolve_job_storage_path(job.get("localEventsPath")) if job.get("localEventsPath") else None
+    status_payload = read_status_file(status_path) if status_path else {}
+    gguf_path = _find_on_disk_gguf(job)
+    modelfile_path = _materialize_local_modelfile(job)
+
+    result_files_payload = status_payload.get("resultFilesJson") or job.get("resultFilesJson") or []
+    result_files = [deepcopy(item) for item in result_files_payload if isinstance(item, dict)]
+    if gguf_path:
+        _upsert_local_result_file(result_files, "local_gguf", gguf_path)
+    if modelfile_path:
+        _upsert_local_result_file(result_files, "local_modelfile", modelfile_path)
+
+    warnings_payload = status_payload.get("warnings")
+    if not isinstance(warnings_payload, list):
+        progress = job.get("progressJson") if isinstance(job.get("progressJson"), dict) else {}
+        warnings_payload = progress.get("warnings") if isinstance(progress.get("warnings"), list) else []
+    filtered_warnings = _filter_resolved_ollama_warnings(list(warnings_payload or []))
+
+    existing_status = (status_payload.get("status") or job.get("status") or "").strip()
+    existing_finished_at = status_payload.get("finishedAt") or job.get("finishedAt")
+    status_update: dict[str, Any] = {
+        "ollamaRegistered": True,
+        "warnings": filtered_warnings,
+        "resultFilesJson": result_files,
+    }
+    if existing_status in {"", "succeeded"}:
+        status_update.update(
+            {
+                "status": "succeeded",
+                "stage": "succeeded",
+                "statusMessage": (
+                    f"Local GPU QLoRA training finished successfully. "
+                    f"Model available in Ollama as {_display_ollama_model_name(model_name)}."
+                ),
+                "finishedAt": existing_finished_at or utc_now_iso(),
+            }
+        )
+
+    already_registered = bool(status_payload.get("ollamaRegistered"))
+    if status_path:
+        write_status_file(status_path, status_update)
+
+    if events_path and not already_registered:
+        append_event(
+            events_path,
+            "info",
+            f"Model available in Ollama as {_display_ollama_model_name(model_name)}.",
+            event_type="ollama_push_done",
+        )
+
+    now = utc_now_iso()
+
+    def mutator(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+        job_record = get_job(state, job_id)
+        if not job_record:
+            return deepcopy(state)
+
+        progress = job_record.get("progressJson") if isinstance(job_record.get("progressJson"), dict) else {}
+        job_record["resultFilesJson"] = result_files
+        job_record["ollamaModelName"] = model_name
+        job_record["status"] = "succeeded" if existing_status in {"", "succeeded"} else job_record.get("status")
+        if existing_status in {"", "succeeded"}:
+            job_record["statusMessage"] = (
+                f"Local GPU QLoRA training finished successfully. "
+                f"Model available in Ollama as {_display_ollama_model_name(model_name)}."
+            )
+            job_record["finishedAt"] = job_record.get("finishedAt") or existing_finished_at or now
+        job_record["progressJson"] = {
+            **progress,
+            "warnings": filtered_warnings,
+            "ollamaRegistered": True,
+        }
+        job_record["lastSyncedAt"] = now
+        job_record["updatedAt"] = now
+        return deepcopy(job_record)
+
+    update_state(mutator)
+
+
+def _refresh_local_job_ollama_registration(job: dict[str, Any]) -> None:
+    model_name = (job.get("ollamaModelName") or "").strip()
+    if not model_name:
+        return
+
+    progress = job.get("progressJson") if isinstance(job.get("progressJson"), dict) else {}
+    result_types = {
+        item.get("type")
+        for item in (job.get("resultFilesJson") or [])
+        if isinstance(item, dict) and isinstance(item.get("type"), str)
+    }
+    if bool(progress.get("ollamaRegistered")) and {"local_gguf", "local_modelfile"}.issubset(result_types):
+        return
+
+    show_result = _run_ollama_cli("show", model_name)
+    if show_result.returncode == 0:
+        _READY_OLLAMA_MODELS.add(model_name)
+        _reconcile_local_ollama_registration(job, model_name)
 
 
 def _extract_training_warning_messages(job: dict[str, Any]) -> list[str]:
@@ -436,18 +648,20 @@ def ensure_ollama_model_available(model: str) -> None:
     if not normalized_model or normalized_model in _READY_OLLAMA_MODELS:
         return
 
+    local_job = _find_local_tuned_job_for_ollama_name(normalized_model)
     show_result = _run_ollama_cli("show", normalized_model)
     if show_result.returncode == 0:
         _READY_OLLAMA_MODELS.add(normalized_model)
+        if local_job is not None:
+            _reconcile_local_ollama_registration(local_job, normalized_model)
         return
 
     # If this name corresponds to a locally fine-tuned job, skip the registry
     # pull (which can never succeed) and try to re-register it from an on-disk
     # Modelfile. Fall back to an actionable error if that isn't possible.
-    local_job = _find_local_tuned_job_for_ollama_name(normalized_model)
     if local_job is not None:
         host_hint = _ollama_host_hint()
-        modelfile_path = _find_on_disk_modelfile(local_job)
+        modelfile_path = _materialize_local_modelfile(local_job)
 
         if modelfile_path:
             logger.info(
@@ -459,6 +673,7 @@ def ensure_ollama_model_available(model: str) -> None:
             create_result = _run_ollama_cli("create", normalized_model, "-f", modelfile_path)
             if create_result.returncode == 0:
                 _READY_OLLAMA_MODELS.add(normalized_model)
+                _reconcile_local_ollama_registration(local_job, normalized_model)
                 return
             create_message = (
                 create_result.stderr.strip()
@@ -481,7 +696,7 @@ def ensure_ollama_model_available(model: str) -> None:
         ollama_registered = bool(progress.get("ollamaRegistered"))
         training_warnings = _extract_training_warning_messages(local_job)
         adapter_path = _extract_local_artifact_path(local_job, "local_adapter")
-        gguf_path = _extract_local_artifact_path(local_job, "local_gguf")
+        gguf_path = _extract_local_gguf_path(local_job) or _find_on_disk_gguf(local_job)
         status = (local_job.get("status") or "").strip() or "unknown"
 
         if ollama_registered:
@@ -1493,7 +1708,7 @@ def create_dataset_record(original_filename: str, payload: bytes, name: str | No
         "id": dataset_id,
         "name": name or original_filename.removesuffix(".jsonl"),
         "originalFilename": original_filename,
-        "storagePath": str(storage_path),
+        "storagePath": serialize_dataset_storage_path(storage_path) or str(storage_path),
         "fileSizeBytes": len(payload),
         "recordCount": summary["totalRecords"],
         "validationStatus": "INVALID" if summary["invalidRecords"] > 0 else "VALID",
@@ -1516,6 +1731,23 @@ def retrieve_dataset_detail(dataset_id: str) -> dict[str, Any]:
     dataset = get_dataset(state, dataset_id)
     if not dataset:
         raise ApiError("DATASET_NOT_FOUND", "Dataset not found.", 404)
+
+    normalized_path = resolve_dataset_storage_path(dataset.get("storagePath"))
+    if normalized_path and normalized_path.is_file():
+        normalized_path_str = serialize_dataset_storage_path(normalized_path) or str(normalized_path)
+        if normalized_path_str != dataset.get("storagePath"):
+            now = utc_now_iso()
+
+            def mutator(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+                dataset_record = get_dataset(state, dataset_id)
+                if not dataset_record:
+                    raise ApiError("DATASET_NOT_FOUND", "Dataset not found.", 404)
+                dataset_record["storagePath"] = normalized_path_str
+                dataset_record["updatedAt"] = now
+                return deepcopy(dataset_record)
+
+            return update_state(mutator)
+
     return deepcopy(dataset)
 
 
@@ -1538,7 +1770,7 @@ def upload_dataset_record_to_openai(dataset_id: str) -> dict[str, Any]:
         raise ApiError("DATASET_INVALID", "Dataset must validate successfully before upload.", 400)
 
     try:
-        uploaded = upload_training_file_to_openai(dataset["storagePath"])
+        uploaded = upload_training_file_to_openai(str(_resolve_dataset_path(dataset.get("storagePath"))))
     except ApiError:
         raise
     except Exception as error:  # pragma: no cover
@@ -1563,6 +1795,7 @@ def upload_dataset_record_to_huggingface(dataset_id: str) -> dict[str, Any]:
     if dataset["validationStatus"] != "VALID":
         raise ApiError("DATASET_INVALID", "Dataset must validate successfully before upload.", 400)
 
+    dataset["storagePath"] = str(_resolve_dataset_path(dataset.get("storagePath")))
     upload_metadata = upload_dataset_to_huggingface(dataset)
 
     def mutator(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -1649,7 +1882,7 @@ def _build_local_training_job_config(
         job_id=job_id,
         dataset_id=dataset["id"],
         dataset_name=dataset["name"],
-        dataset_path=dataset["storagePath"],
+        dataset_path=str(_resolve_dataset_path(dataset.get("storagePath"))),
         base_model=base_model,
         working_dir=str(working_dir),
         output_dir=str(output_dir),
@@ -1760,7 +1993,7 @@ def create_job_record(
             "methodType": "qlora",
             "status": submission["status"],
             "statusMessage": submission["statusMessage"],
-            "fineTunedModel": submission["fineTunedModel"],
+            "fineTunedModel": serialize_job_storage_path(submission["fineTunedModel"]) or submission["fineTunedModel"],
             "trainedTokens": None,
             "estimatedFinishAt": None,
             "resultFilesJson": submission["resultFilesJson"],
@@ -1769,20 +2002,20 @@ def create_job_record(
             "createdAt": now,
             "updatedAt": now,
             "finishedAt": None,
-            "modelRepoId": submission["modelRepoId"],
+            "modelRepoId": serialize_job_storage_path(submission["modelRepoId"]) or submission["modelRepoId"],
             "modelRepoUrl": None,
-            "datasetRepoId": submission["datasetRepoId"],
-            "datasetRepoPath": submission["datasetRepoPath"],
+            "datasetRepoId": serialize_dataset_storage_path(submission["datasetRepoId"]) or submission["datasetRepoId"],
+            "datasetRepoPath": serialize_dataset_storage_path(submission["datasetRepoPath"]) or submission["datasetRepoPath"],
             "datasetRepoUrl": None,
             "trackioUrl": None,
             "trainingBackend": submission["trainingBackend"],
             "trainingPreset": config.training_preset,
-            "localConfigPath": config.config_path,
-            "localStatusPath": config.status_path,
-            "localEventsPath": config.events_path,
-            "localLogPath": config.log_path,
-            "localMetricsPath": config.metrics_path,
-            "localArtifactsPath": config.model_output_path,
+            "localConfigPath": serialize_job_storage_path(config.config_path) or config.config_path,
+            "localStatusPath": serialize_job_storage_path(config.status_path) or config.status_path,
+            "localEventsPath": serialize_job_storage_path(config.events_path) or config.events_path,
+            "localLogPath": serialize_job_storage_path(config.log_path) or config.log_path,
+            "localMetricsPath": serialize_job_storage_path(config.metrics_path) or config.metrics_path,
+            "localArtifactsPath": serialize_job_storage_path(config.model_output_path) or config.model_output_path,
             "progressJson": submission["progressJson"],
             "ollamaModelName": resolved_ollama_model_name or None,
         }
@@ -1882,7 +2115,7 @@ def create_job_record(
 
     if not openai_file_id:
         try:
-            uploaded = upload_training_file_to_openai(dataset["storagePath"])
+            uploaded = upload_training_file_to_openai(str(_resolve_dataset_path(dataset.get("storagePath"))))
         except ApiError:
             raise
         except Exception as error:  # pragma: no cover
@@ -1965,6 +2198,44 @@ def retrieve_job_detail(job_id: str) -> dict[str, Any]:
     job = get_job(state, job_id)
     if not job:
         raise ApiError("JOB_NOT_FOUND", "Job not found.", 404)
+    if job.get("modelProvider") == "local":
+        _refresh_local_job_ollama_registration(job)
+
+        state = load_state()
+        job = get_job(state, job_id)
+        if not job:
+            raise ApiError("JOB_NOT_FOUND", "Job not found.", 404)
+
+        inspection = inspect_local_training_job(job)
+        live_job = deepcopy(job)
+        live_job["status"] = inspection["status"]
+        live_job["statusMessage"] = inspection["statusMessage"]
+        live_job["providerJobId"] = inspection["providerJobId"]
+        live_job["providerJobUrl"] = inspection["providerJobUrl"]
+        live_job["providerNamespace"] = inspection["providerNamespace"]
+        live_job["fineTunedModel"] = inspection["fineTunedModel"]
+        live_job["trainedTokens"] = inspection["trainedTokens"]
+        live_job["resultFilesJson"] = inspection["resultFilesJson"]
+        live_job["modelRepoId"] = inspection["modelRepoId"]
+        live_job["modelRepoUrl"] = inspection["modelRepoUrl"]
+        live_job["datasetRepoId"] = inspection["datasetRepoId"]
+        live_job["datasetRepoPath"] = inspection["datasetRepoPath"]
+        live_job["datasetRepoUrl"] = inspection["datasetRepoUrl"]
+        live_job["trackioUrl"] = inspection["trackioUrl"]
+        live_job["progressJson"] = inspection["progressJson"]
+        live_job["updatedAt"] = inspection["updatedAt"]
+        if inspection["status"] in {"succeeded", "failed", "cancelled"}:
+            live_job["finishedAt"] = inspection["finishedAt"] or live_job.get("finishedAt")
+
+        state_with_events = deepcopy(state)
+        existing_event_ids = {event["id"] for event in state_with_events["job_events"]}
+        state_with_events["job_events"].extend(
+            collect_local_training_events(
+                events_path=job["localEventsPath"],
+                existing_event_ids=existing_event_ids,
+            )
+        )
+        return _job_detail_payload(state_with_events, live_job)
     return _job_detail_payload(state, job)
 
 
@@ -2007,8 +2278,8 @@ def build_job_download_package(job_id: str, artifact_type: str = "adapter") -> d
         raise ApiError("VALIDATION_ERROR", f"Unsupported download type `{artifact_type}`.", 400)
 
     adapter_path = _resolve_local_job_path(job.get("fineTunedModel") or job.get("localArtifactsPath"))
-    metrics_path = Path(job["localMetricsPath"]).resolve() if job.get("localMetricsPath") else None
-    status_path = Path(job["localStatusPath"]).resolve() if job.get("localStatusPath") else None
+    metrics_path = resolve_job_storage_path(job.get("localMetricsPath")) if job.get("localMetricsPath") else None
+    status_path = resolve_job_storage_path(job.get("localStatusPath")) if job.get("localStatusPath") else None
     working_dir = _resolve_local_job_path(job.get("localConfigPath")).parent
     downloads_dir = working_dir / "downloads"
     downloads_dir.mkdir(parents=True, exist_ok=True)

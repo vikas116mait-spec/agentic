@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,13 @@ from python_api.local_qlora.config import LocalQLoraJobConfig
 from python_api.local_qlora.export import ensure_ollama_runtime_ready, ollama_runtime_summary
 from python_api.local_qlora.model import local_training_enabled
 from python_api.local_qlora.state import append_event, read_status_file, write_status_file
-from python_api.store import ROOT, utc_now_iso
+from python_api.store import (
+    ROOT,
+    resolve_job_storage_path,
+    serialize_dataset_storage_path,
+    serialize_job_storage_path,
+    utc_now_iso,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -30,6 +37,32 @@ def _unsloth_compile_location() -> str:
         path = Path.home() / ".cache" / "agentic" / "unsloth_compiled_cache"
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
+
+
+def _serialized_job_path(raw_path: str | None) -> str | None:
+    return serialize_job_storage_path(raw_path) if raw_path else raw_path
+
+
+def _serialized_dataset_path(raw_path: str | None) -> str | None:
+    return serialize_dataset_storage_path(raw_path) if raw_path else raw_path
+
+
+def _serialized_result_files(result_files: Any) -> Any:
+    if not isinstance(result_files, list):
+        return result_files
+
+    serialized: list[Any] = []
+    for artifact in result_files:
+        if not isinstance(artifact, dict):
+            serialized.append(artifact)
+            continue
+        serialized.append(
+            {
+                **artifact,
+                "path": _serialized_job_path(artifact.get("path")) or artifact.get("path"),
+            }
+        )
+    return serialized
 
 
 def configured_local_training_python() -> str:
@@ -49,36 +82,56 @@ def local_training_provider_is_configured() -> bool:
     return Path(python_executable).exists() if os.path.isabs(python_executable) else shutil.which(python_executable) is not None
 
 
+def _missing_compiler_tools(runtime: dict[str, Any]) -> list[str]:
+    if not runtime.get("unslothAvailable"):
+        return []
+
+    missing: list[str] = []
+    compiler_tools = runtime.get("compilerTools") or {}
+    if not compiler_tools.get("cc"):
+        missing.append("gcc")
+    if not compiler_tools.get("cxx"):
+        missing.append("g++")
+    return missing
+
+
 def _probe_training_runtime() -> dict[str, Any]:
-    probe = """
-import importlib.util
-import json
-import sys
+    probe = textwrap.dedent(
+        """
+        import importlib.util
+        import json
+        import shutil
+        import sys
 
-def available(name):
-    return importlib.util.find_spec(name) is not None
+        def available(name):
+            return importlib.util.find_spec(name) is not None
 
-summary = {
-    "python": sys.executable,
-    "dependencies": {
-        "torch": available("torch"),
-        "transformers": available("transformers"),
-        "datasets": available("datasets"),
-        "peft": available("peft"),
-        "trl": available("trl"),
-        "accelerate": available("accelerate"),
-        "bitsandbytes": available("bitsandbytes"),
-    },
-    "gpuCount": 0,
-    "unslothAvailable": available("unsloth"),
-}
+        summary = {
+            "python": sys.executable,
+            "dependencies": {
+                "torch": available("torch"),
+                "transformers": available("transformers"),
+                "datasets": available("datasets"),
+                "peft": available("peft"),
+                "trl": available("trl"),
+                "accelerate": available("accelerate"),
+                "bitsandbytes": available("bitsandbytes"),
+            },
+            "compilerTools": {
+                "cc": shutil.which("gcc"),
+                "cxx": shutil.which("g++"),
+            },
+            "gpuCount": 0,
+            "unslothAvailable": available("unsloth"),
+        }
 
-if summary["dependencies"]["torch"]:
-    import torch
-    summary["gpuCount"] = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if summary["dependencies"]["torch"]:
+            import torch
+            summary["gpuCount"] = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
-print(json.dumps(summary))
-""".strip()
+        print(json.dumps(summary))
+        """
+    ).strip()
 
     result = subprocess.run(
         [local_training_python(), "-c", probe],
@@ -140,6 +193,14 @@ def ensure_local_training_ready(
             + ". Install the local training requirements into the interpreter from LOCAL_TRAINING_PYTHON before starting a local training job."
         )
 
+    missing_compilers = _missing_compiler_tools(summary)
+    if missing_compilers:
+        raise RuntimeError(
+            "Local GPU QLoRA with Unsloth requires a native compiler toolchain, but the training runtime is missing: "
+            + ", ".join(missing_compilers)
+            + ". Install a C/C++ compiler (for example `build-essential`) or use a runtime image that includes it."
+        )
+
     if summary["gpuCount"] == 0 and not allow_cpu_fallback:
         raise RuntimeError(
             "No CUDA-visible GPU was detected by the Python runtime. Set LOCAL_TRAINING_ALLOW_CPU_FALLBACK=1 only if you intentionally want CPU fallback."
@@ -148,7 +209,7 @@ def ensure_local_training_ready(
     warnings: list[str] = []
     if export_gguf and not summary.get("unslothAvailable"):
         warnings.append(
-            "Unsloth is not installed in LOCAL_TRAINING_PYTHON, so this run will still save the adapter but skip GGUF export and Ollama registration."
+            "Unsloth is not installed in LOCAL_TRAINING_PYTHON, so GGUF export will use the slower saved-adapter llama.cpp fallback after training."
         )
 
     if push_to_ollama:
@@ -173,6 +234,7 @@ def inspect_local_training_runtime() -> dict[str, Any]:
         "gpuCount": 0,
         "unslothAvailable": False,
         "dependencies": {},
+        "compilerTools": {},
         "missingDependencies": [],
         "warnings": [],
         "ollama": ollama_runtime_summary(),
@@ -200,15 +262,23 @@ def inspect_local_training_runtime() -> dict[str, Any]:
     payload["gpuCount"] = int(runtime.get("gpuCount") or 0)
     payload["unslothAvailable"] = bool(runtime.get("unslothAvailable"))
     payload["dependencies"] = runtime.get("dependencies") or {}
+    payload["compilerTools"] = runtime.get("compilerTools") or {}
     payload["missingDependencies"] = sorted(
         name for name, available in payload["dependencies"].items() if not available
     )
+    missing_compilers = _missing_compiler_tools(runtime)
 
     if payload["gpuCount"] == 0:
         payload["warnings"].append("No CUDA-visible GPU was detected for the training runtime.")
     if payload["missingDependencies"]:
         payload["warnings"].append(
             "Missing local training dependencies: " + ", ".join(payload["missingDependencies"])
+        )
+    if missing_compilers:
+        payload["warnings"].append(
+            "Unsloth is installed, but the training runtime is missing a native compiler toolchain: "
+            + ", ".join(missing_compilers)
+            + ". Install `build-essential` or use a runtime image that includes gcc/g++."
         )
     if not payload["unslothAvailable"]:
         payload["warnings"].append("Unsloth is not installed, so local training will use the slower HuggingFace + PEFT path.")
@@ -264,7 +334,7 @@ def _summarize_failure_from_log(log_path: str | None) -> str | None:
     if not log_path:
         return None
 
-    path = Path(log_path)
+    path = resolve_job_storage_path(log_path) or Path(log_path)
     if not path.exists():
         return None
 
@@ -444,7 +514,7 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         "createdAt": utc_now_iso(),
         "updatedAt": utc_now_iso(),
         "baseModel": config.base_model,
-        "modelOutputPath": config.model_output_path,
+        "modelOutputPath": _serialized_job_path(config.model_output_path) or config.model_output_path,
         "runtimeSummary": runtime_payload,
         "warnings": runtime_payload["warnings"],
         "ollamaRegistered": False,
@@ -539,20 +609,20 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
         "providerNamespace": None,
         "status": "running",
         "statusMessage": f"Local GPU QLoRA training started with PID {process.pid}.",
-        "fineTunedModel": config.model_output_path,
-        "modelRepoId": config.model_output_path,
+        "fineTunedModel": _serialized_job_path(config.model_output_path),
+        "modelRepoId": _serialized_job_path(config.model_output_path),
         "modelRepoUrl": None,
-        "datasetRepoId": config.dataset_path,
-        "datasetRepoPath": config.dataset_path,
+        "datasetRepoId": _serialized_dataset_path(config.dataset_path),
+        "datasetRepoPath": _serialized_dataset_path(config.dataset_path),
         "datasetRepoUrl": None,
         "trackioUrl": None,
         "uploadedToHuggingFaceAt": None,
-        "resultFilesJson": [
+        "resultFilesJson": _serialized_result_files([
             {"type": "local_config", "path": config_path},
             {"type": "local_log", "path": config.log_path},
             {"type": "local_status", "path": config.status_path},
             {"type": "local_adapter", "path": config.model_output_path},
-        ],
+        ]),
         "trainingBackend": "local_qlora",
         "progressJson": {
             "stage": "queued",
@@ -567,7 +637,7 @@ def spawn_local_training_job(config: LocalQLoraJobConfig, runtime_summary: dict[
 
 
 def inspect_local_training_job(job_record: dict[str, Any]) -> dict[str, Any]:
-    status_path = Path(job_record["localStatusPath"])
+    status_path = resolve_job_storage_path(job_record["localStatusPath"]) or Path(job_record["localStatusPath"])
     status_payload = read_status_file(status_path)
     process_id = status_payload.get("processId") or job_record.get("providerJobId")
     try:
@@ -594,13 +664,13 @@ def inspect_local_training_job(job_record: dict[str, Any]) -> dict[str, Any]:
         "providerJobId": str(process_id_int) if process_id_int else job_record.get("providerJobId"),
         "providerJobUrl": None,
         "providerNamespace": None,
-        "fineTunedModel": status_payload.get("fineTunedModel") or job_record.get("fineTunedModel"),
+        "fineTunedModel": _serialized_job_path(status_payload.get("fineTunedModel") or job_record.get("fineTunedModel")),
         "trainedTokens": status_payload.get("trainedTokens"),
-        "resultFilesJson": status_payload.get("resultFilesJson") or job_record.get("resultFilesJson"),
-        "modelRepoId": status_payload.get("modelOutputPath") or job_record.get("modelRepoId"),
+        "resultFilesJson": _serialized_result_files(status_payload.get("resultFilesJson") or job_record.get("resultFilesJson")),
+        "modelRepoId": _serialized_job_path(status_payload.get("modelOutputPath") or job_record.get("modelRepoId")),
         "modelRepoUrl": None,
-        "datasetRepoId": job_record.get("datasetRepoId"),
-        "datasetRepoPath": job_record.get("datasetRepoPath"),
+        "datasetRepoId": _serialized_dataset_path(job_record.get("datasetRepoId")),
+        "datasetRepoPath": _serialized_dataset_path(job_record.get("datasetRepoPath")),
         "datasetRepoUrl": None,
         "trackioUrl": None,
         "updatedAt": status_payload.get("updatedAt") or utc_now_iso(),
@@ -625,7 +695,7 @@ def collect_local_training_events(
     events_path: str,
     existing_event_ids: set[str],
 ) -> list[dict[str, Any]]:
-    path = Path(events_path)
+    path = resolve_job_storage_path(events_path) or Path(events_path)
     if not path.exists():
         return []
 
@@ -641,8 +711,8 @@ def collect_local_training_events(
 
 
 def cancel_local_training_job(job_record: dict[str, Any]) -> dict[str, Any]:
-    status_path = Path(job_record["localStatusPath"])
-    events_path = Path(job_record["localEventsPath"])
+    status_path = resolve_job_storage_path(job_record["localStatusPath"]) or Path(job_record["localStatusPath"])
+    events_path = resolve_job_storage_path(job_record["localEventsPath"]) or Path(job_record["localEventsPath"])
     status_payload = read_status_file(status_path)
     process_id = status_payload.get("processId") or job_record.get("providerJobId")
     try:

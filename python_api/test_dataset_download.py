@@ -33,6 +33,26 @@ class DatasetDownloadPackageTests(unittest.TestCase):
         self.assertEqual(package["filename"], "customer-support.jsonl")
         self.assertEqual(package["mediaType"], "application/x-ndjson")
 
+    def test_rebases_legacy_container_dataset_path_to_current_uploads_directory(self) -> None:
+        with tempfile.TemporaryDirectory(dir=str(UPLOADS_DIR / "datasets")) as dataset_dir:
+            dataset_path = Path(dataset_dir) / "customer-support.jsonl"
+            dataset_path.write_text('{"messages":[{"role":"user","content":"Hi"}]}\n', encoding="utf-8")
+            legacy_path = f"/app/uploads_python/datasets/{Path(dataset_dir).name}/customer-support.jsonl"
+
+            with patch(
+                "python_api.services.retrieve_dataset_detail",
+                return_value={
+                    "id": "dataset-legacy",
+                    "originalFilename": "customer-support.jsonl",
+                    "storagePath": legacy_path,
+                },
+            ):
+                package = build_dataset_download_package("dataset-legacy")
+
+        self.assertEqual(package["path"], str(dataset_path))
+        self.assertEqual(package["filename"], "customer-support.jsonl")
+        self.assertEqual(package["mediaType"], "application/x-ndjson")
+
     def test_rejects_dataset_path_outside_uploads_directory(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".jsonl") as temp_file:
             with patch(

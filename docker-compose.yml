@@ -33,12 +33,17 @@ services:
   python-api:
     build:
       context: .
-      dockerfile: Dockerfile.api
+      dockerfile: python_api/Dockerfile
     env_file:
       - .env
     environment:
+      PORT: "12400"
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      LOCAL_TRAINING_ENABLED: "1"
+      LOCAL_TRAINING_PYTHON: "/usr/local/bin/python"
+      OLLAMA_BASE_URL: "http://127.0.0.1:11434"
+      OLLAMA_AUTO_MANAGE: "0"
       TEMPORAL_AUTO_START_DEV_SERVER: "0"
       TEMPORAL_ADDRESS: "temporal:7233"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agentic
@@ -49,9 +54,12 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    gpus: all
+    shm_size: "16gb"
     volumes:
-      - python_api_data:/app/python_api/data
-      - python_uploads:/app/uploads_python
+      - python_api_data:/data/python_api
+      - python_uploads:/data/uploads_python
+      - ollama_models:/data/ollama
     restart: unless-stopped
     healthcheck:
       test:
@@ -125,6 +133,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  ollama_models:
   postgres_data:
   python_api_data:
   python_uploads:

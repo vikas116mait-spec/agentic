@@ -1,6 +1,7 @@
 # GPU-enabled container for the FastAPI + Ollama + local-QLoRA trainer.
-# Used for Fly.io deploys (see README "Deploying to Vercel" section); the
-# slimmer CPU-only ../Dockerfile.api is kept for docker-compose dev.
+# Used by the Docker Compose GPU/local-training path as well as Fly.io style
+# deploys. The slimmer CPU-only ../Dockerfile.api remains available when a
+# lightweight non-GPU backend is preferred.
 
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
@@ -11,6 +12,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    CC=gcc \
+    CXX=g++ \
     AGENTIC_DATA_DIR=/data/python_api \
     AGENTIC_UPLOADS_DIR=/data/uploads_python \
     OLLAMA_MODELS=/data/ollama \
@@ -20,9 +23,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
         curl \
         git \
+        pkg-config \
+        zstd \
         tini \
         software-properties-common \
     && add-apt-repository -y ppa:deadsnakes/ppa \
@@ -63,7 +69,8 @@ COPY python_api/start.sh /usr/local/bin/start-agentic.sh
 RUN chmod +x /usr/local/bin/start-agentic.sh \
     && chmod +x /app/scripts/*.py 2>/dev/null || true
 
-EXPOSE 8080
+# Fly uses 8080; local compose overrides PORT to 12400.
+EXPOSE 8080 12400
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]

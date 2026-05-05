@@ -47,6 +47,13 @@ def _resolve_root(env_name: str, default: Path) -> Path:
     return path
 
 
+def _safe_resolve_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 DATA_DIR = _resolve_root("AGENTIC_DATA_DIR", ROOT / "python_api" / "data")
 STATE_FILE = DATA_DIR / "state.json"
 UPLOADS_DIR = _resolve_root("AGENTIC_UPLOADS_DIR", ROOT / "uploads_python")
@@ -147,6 +154,7 @@ def _normalize_state(state: dict[str, Any]) -> State:
     defaults = empty_state()
     for key, default_value in defaults.items():
         state.setdefault(key, deepcopy(default_value))
+    _normalize_uploads_state_paths(state)
     return state
 
 
@@ -170,6 +178,137 @@ def ensure_paths() -> None:
     TEMPORAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not _postgres_enabled() and not STATE_FILE.exists():
         STATE_FILE.write_text(json.dumps(empty_state(), indent=2), encoding="utf-8")
+
+
+def resolve_uploads_child_path(raw_path: str | os.PathLike[str] | None, *, child_dir: str) -> Path | None:
+    """Map legacy absolute uploads paths into the current uploads root.
+
+    Dataset and job records historically stored absolute paths such as
+    `/app/uploads_python/...` or paths from another repo checkout. When the
+    uploads root moves, we can still recover the current on-disk location by
+    preserving the suffix under `datasets/` or `jobs/`.
+    """
+
+    if raw_path is None:
+        return None
+
+    try:
+        raw_value = os.fspath(raw_path).strip()
+    except TypeError:
+        return None
+    if not raw_value:
+        return None
+
+    raw_path_obj = Path(raw_value).expanduser()
+    if raw_path_obj.is_absolute():
+        candidate = _safe_resolve_path(raw_path_obj)
+    elif raw_path_obj.parts and raw_path_obj.parts[0] == child_dir:
+        candidate = _safe_resolve_path(UPLOADS_DIR.joinpath(*raw_path_obj.parts))
+    else:
+        candidate = _safe_resolve_path(ROOT / raw_path_obj)
+
+    child_root = _safe_resolve_path(UPLOADS_DIR / child_dir)
+    try:
+        candidate.relative_to(child_root)
+        return candidate
+    except ValueError:
+        pass
+
+    parts = candidate.parts
+    try:
+        child_index = parts.index(child_dir)
+    except ValueError:
+        return candidate
+
+    rebased = _safe_resolve_path(child_root.joinpath(*parts[child_index + 1 :]))
+    try:
+        rebased.relative_to(child_root)
+    except ValueError:
+        return candidate
+    return rebased
+
+
+def resolve_dataset_storage_path(raw_path: str | os.PathLike[str] | None) -> Path | None:
+    return resolve_uploads_child_path(raw_path, child_dir="datasets")
+
+
+def resolve_job_storage_path(raw_path: str | os.PathLike[str] | None) -> Path | None:
+    return resolve_uploads_child_path(raw_path, child_dir="jobs")
+
+
+def serialize_uploads_child_path(raw_path: str | os.PathLike[str] | None, *, child_dir: str) -> str | None:
+    resolved = resolve_uploads_child_path(raw_path, child_dir=child_dir)
+    if resolved is None:
+        return None
+
+    child_root = _safe_resolve_path(UPLOADS_DIR / child_dir)
+    try:
+        relative = resolved.relative_to(child_root)
+    except ValueError:
+        parts = resolved.parts
+        try:
+            child_index = parts.index(child_dir)
+        except ValueError:
+            return str(resolved)
+        relative = Path(*parts[child_index + 1 :])
+
+    return str(Path(child_dir) / relative)
+
+
+def serialize_dataset_storage_path(raw_path: str | os.PathLike[str] | None) -> str | None:
+    return serialize_uploads_child_path(raw_path, child_dir="datasets")
+
+
+def serialize_job_storage_path(raw_path: str | os.PathLike[str] | None) -> str | None:
+    return serialize_uploads_child_path(raw_path, child_dir="jobs")
+
+
+def _normalize_dataset_record_paths(dataset: dict[str, Any]) -> None:
+    serialized = serialize_dataset_storage_path(dataset.get("storagePath"))
+    if serialized:
+        dataset["storagePath"] = serialized
+
+
+def _normalize_local_job_record_paths(job: dict[str, Any]) -> None:
+    for field in (
+        "fineTunedModel",
+        "modelRepoId",
+        "localConfigPath",
+        "localStatusPath",
+        "localEventsPath",
+        "localLogPath",
+        "localMetricsPath",
+        "localArtifactsPath",
+    ):
+        serialized = serialize_job_storage_path(job.get(field))
+        if serialized:
+            job[field] = serialized
+
+    for field in ("datasetRepoId", "datasetRepoPath"):
+        serialized = serialize_dataset_storage_path(job.get(field))
+        if serialized:
+            job[field] = serialized
+
+    result_files = job.get("resultFilesJson")
+    if not isinstance(result_files, list):
+        return
+
+    for artifact in result_files:
+        if not isinstance(artifact, dict):
+            continue
+        serialized = serialize_job_storage_path(artifact.get("path"))
+        if serialized:
+            artifact["path"] = serialized
+
+
+def _normalize_uploads_state_paths(state: dict[str, Any]) -> None:
+    for dataset in state.get("datasets", []):
+        if isinstance(dataset, dict):
+            _normalize_dataset_record_paths(dataset)
+
+    for job in state.get("jobs", []):
+        if isinstance(job, dict) and job.get("modelProvider") == "local":
+            _normalize_local_job_record_paths(job)
 
 
 def _postgres_pool_bounds() -> tuple[int, int]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import os
@@ -15,7 +16,7 @@ from python_api.local_qlora.data import build_sft_datasets
 from python_api.local_qlora.evaluation import summarize_eval_metrics
 from python_api.local_qlora.model import load_quantized_model, local_gpu_count
 from python_api.local_qlora.state import append_event, read_status_file, write_status_file
-from python_api.store import utc_now_iso
+from python_api.store import serialize_job_storage_path, utc_now_iso
 
 class LocalProgressCallback:
     def __init__(self, *, config: LocalQLoraJobConfig, status_path: Path, gpu_count: int) -> None:
@@ -264,6 +265,24 @@ def _instantiate_trainer(
     return SFTTrainer(**trainer_kwargs)
 
 
+def _release_training_model_resources(trainer: Any | None, torch_module: Any) -> None:
+    if trainer is not None:
+        try:
+            setattr(trainer, "model", None)
+        except Exception:
+            pass
+    gc.collect()
+
+    cuda = getattr(torch_module, "cuda", None)
+    is_available = getattr(cuda, "is_available", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if callable(is_available) and is_available() and callable(empty_cache):
+        try:
+            empty_cache()
+        except Exception:
+            pass
+
+
 def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
     status_path = Path(config.status_path)
     events_path = Path(config.events_path)
@@ -285,7 +304,7 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
             "statusMessage": "Preparing local QLoRA training artifacts.",
             "startedAt": utc_now_iso(),
             "baseModel": config.base_model,
-            "modelOutputPath": config.model_output_path,
+            "modelOutputPath": serialize_job_storage_path(config.model_output_path) or config.model_output_path,
         },
     )
 
@@ -366,6 +385,7 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
             eval_dataset=eval_dataset,
             training_args=training_args,
         )
+        model = None
         progress_cb = LocalProgressCallback(config=config, status_path=status_path, gpu_count=local_gpu_count())
         trainer.add_callback(progress_cb)
 
@@ -412,70 +432,109 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
         except Exception:
             pass
 
-        # ── GGUF export (only available via Unsloth) ──────────────────────────
+        # ── GGUF export (prefer Unsloth, fall back to merged-adapter export) ──
         gguf_path: str | None = None
         modelfile_path: str | None = None
         ollama_registered = False
         if config.export_gguf:
-            if not unsloth_active:
-                warning_message = (
-                    "GGUF export was skipped because Unsloth is not installed in LOCAL_TRAINING_PYTHON."
-                    if not config.push_to_ollama
-                    else "GGUF export and Ollama registration were skipped because Unsloth is not installed in LOCAL_TRAINING_PYTHON."
+            try:
+                from python_api.local_qlora.export import (
+                    export_gguf,
+                    export_saved_adapter_to_gguf,
+                    push_to_ollama,
+                    resolve_fallback_gguf_outtype,
+                    write_ollama_modelfile,
                 )
-                record_warning(warning_message, event_type="gguf_export_skipped")
-            else:
-                try:
-                    from python_api.local_qlora.export import export_gguf, push_to_ollama, write_ollama_modelfile
 
-                    write_status_file(
-                        status_path,
-                        {
-                            "stage": "exporting",
-                            "statusMessage": f"Exporting GGUF ({config.gguf_quantization}). This may take a few minutes.",
-                        },
-                    )
-                    append_event(
-                        events_path,
-                        "info",
-                        f"Exporting to GGUF format ({config.gguf_quantization}).",
-                        event_type="gguf_export_started",
-                    )
-                    gguf_export_root = Path(config.working_dir)
-                    gguf_path = export_gguf(trainer.model, tokenizer, gguf_export_root, config.gguf_quantization)
-                    modelfile_path = write_ollama_modelfile(gguf_path)
-                    append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
+                write_status_file(
+                    status_path,
+                    {
+                        "stage": "exporting",
+                        "statusMessage": f"Exporting GGUF ({config.gguf_quantization}). This may take a few minutes.",
+                    },
+                )
+                append_event(
+                    events_path,
+                    "info",
+                    f"Exporting to GGUF format ({config.gguf_quantization}).",
+                    event_type="gguf_export_started",
+                )
 
-                    if config.push_to_ollama and config.ollama_model_name:
+                gguf_export_root = Path(config.working_dir)
+                fallback_note: str | None = None
+                if unsloth_active:
+                    try:
+                        gguf_path = export_gguf(trainer.model, tokenizer, gguf_export_root, config.gguf_quantization)
+                    except Exception as unsloth_export_error:
+                        fallback_outtype, fallback_note = resolve_fallback_gguf_outtype(config.gguf_quantization)
                         append_event(
                             events_path,
                             "info",
-                            f"Pushing to Ollama as '{config.ollama_model_name}'.",
-                            event_type="ollama_push_started",
+                            (
+                                f"Unsloth GGUF export failed ({unsloth_export_error}). "
+                                f"Retrying with the saved-adapter llama.cpp fallback as {fallback_outtype}."
+                            ),
+                            event_type="gguf_export_fallback",
                         )
-                        try:
-                            push_to_ollama(gguf_path, config.ollama_model_name)
-                            ollama_registered = True
-                            append_event(
-                                events_path,
-                                "info",
-                                f"Model available in Ollama as '{config.ollama_model_name}'.",
-                                event_type="ollama_push_done",
-                            )
-                        except Exception as ollama_error:
-                            recovery_command = f"ollama create {config.ollama_model_name} -f {modelfile_path}"
-                            record_warning(
-                                (
-                                    f"GGUF export succeeded, but Ollama registration failed for '{config.ollama_model_name}': "
-                                    f"{ollama_error}. Start Ollama, then run `{recovery_command}`."
-                                ),
-                                event_type="ollama_push_failed",
-                            )
-                except Exception as export_error:
-                    record_warning(
-                        f"GGUF export failed (adapter is still saved): {export_error}",
-                        event_type="gguf_export_failed",
+                        _release_training_model_resources(trainer, torch_module)
+                        gguf_path = export_saved_adapter_to_gguf(
+                            base_model=config.base_model,
+                            adapter_dir=model_output_path,
+                            output_dir=gguf_export_root,
+                            quantization=config.gguf_quantization,
+                        )
+                else:
+                    fallback_outtype, fallback_note = resolve_fallback_gguf_outtype(config.gguf_quantization)
+                    append_event(
+                        events_path,
+                        "info",
+                        f"Exporting with the saved-adapter llama.cpp fallback as {fallback_outtype}.",
+                        event_type="gguf_export_fallback",
                     )
+                    _release_training_model_resources(trainer, torch_module)
+                    gguf_path = export_saved_adapter_to_gguf(
+                        base_model=config.base_model,
+                        adapter_dir=model_output_path,
+                        output_dir=gguf_export_root,
+                        quantization=config.gguf_quantization,
+                    )
+
+                if fallback_note:
+                    append_event(events_path, "info", fallback_note, event_type="gguf_export_fallback_note")
+
+                modelfile_path = write_ollama_modelfile(gguf_path)
+                append_event(events_path, "info", f"GGUF saved to {gguf_path}.", event_type="gguf_export_done")
+
+                if config.push_to_ollama and config.ollama_model_name:
+                    append_event(
+                        events_path,
+                        "info",
+                        f"Pushing to Ollama as '{config.ollama_model_name}'.",
+                        event_type="ollama_push_started",
+                    )
+                    try:
+                        push_to_ollama(gguf_path, config.ollama_model_name)
+                        ollama_registered = True
+                        append_event(
+                            events_path,
+                            "info",
+                            f"Model available in Ollama as '{config.ollama_model_name}'.",
+                            event_type="ollama_push_done",
+                        )
+                    except Exception as ollama_error:
+                        recovery_command = f"ollama create {config.ollama_model_name} -f {modelfile_path}"
+                        record_warning(
+                            (
+                                f"GGUF export succeeded, but Ollama registration failed for '{config.ollama_model_name}': "
+                                f"{ollama_error}. Start Ollama, then run `{recovery_command}`."
+                            ),
+                            event_type="ollama_push_failed",
+                        )
+            except Exception as export_error:
+                record_warning(
+                    f"GGUF export failed (adapter is still saved): {export_error}",
+                    event_type="gguf_export_failed",
+                )
 
         metrics_payload = {
             "train": train_metrics,
@@ -502,9 +561,9 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                 "stage": "succeeded",
                 "statusMessage": final_status_message,
                 "finishedAt": utc_now_iso(),
-                "fineTunedModel": config.model_output_path,
-                "modelOutputPath": config.model_output_path,
-                "metricsPath": str(metrics_path),
+                "fineTunedModel": serialize_job_storage_path(config.model_output_path) or config.model_output_path,
+                "modelOutputPath": serialize_job_storage_path(config.model_output_path) or config.model_output_path,
+                "metricsPath": serialize_job_storage_path(metrics_path) or str(metrics_path),
                 "trainedTokens": train_metrics.get("train_num_tokens"),
                 "warnings": warnings,
                 "ollamaRegistered": ollama_registered,
@@ -526,11 +585,28 @@ def run_local_qlora_training(config: LocalQLoraJobConfig) -> None:
                     "gradientAccumulationSteps": int(config.resolved_hyperparameters()["gradient_accumulation_steps"]),
                 },
                 "resultFilesJson": [
-                    {"type": "local_adapter", "path": config.model_output_path},
-                    {"type": "local_metrics", "path": str(metrics_path)},
-                    {"type": "local_log", "path": config.log_path},
-                    *([{"type": "local_gguf", "path": gguf_path}] if gguf_path else []),
-                    *([{"type": "local_modelfile", "path": modelfile_path}] if modelfile_path else []),
+                    {
+                        "type": "local_adapter",
+                        "path": serialize_job_storage_path(config.model_output_path) or config.model_output_path,
+                    },
+                    {
+                        "type": "local_metrics",
+                        "path": serialize_job_storage_path(metrics_path) or str(metrics_path),
+                    },
+                    {
+                        "type": "local_log",
+                        "path": serialize_job_storage_path(config.log_path) or config.log_path,
+                    },
+                    *(
+                        [{"type": "local_gguf", "path": serialize_job_storage_path(gguf_path) or gguf_path}]
+                        if gguf_path
+                        else []
+                    ),
+                    *(
+                        [{"type": "local_modelfile", "path": serialize_job_storage_path(modelfile_path) or modelfile_path}]
+                        if modelfile_path
+                        else []
+                    ),
                 ],
                 "metrics": metrics_payload,
                 "lossHistory": progress_cb.loss_history,
